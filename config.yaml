@@ -1,0 +1,30 @@
+# Denovo Benchmarks Runner Configuration
+
+# Local repository settings
+denovo_benchmarks:
+  local_path: "denovo_benchmarks"
+  repo_url: "git@github.com:bittremieuxlab/denovo_benchmarks.git"
+  branch: "main"
+
+# Alexandria storage paths
+alexandria:
+  outputs_path: "/mnt/data/nkubrakov/denovo_benchmarks/outputs"
+  containers_path: "/mnt/data/nkubrakov/denovo_benchmarks/containers"
+  host: "nkubrakov@alexandria.uantwerpen.be"
+
+# Datasets to process
+datasets:
+  - "test_dataset_human"
+
+# Version strategy
+# Options: "latest_only" (only process latest versions)
+#          "all_versions" (not yet implemented)
+version_strategy: "latest_only"
+
+# Slurm defaults
+slurm:
+  partition: "one_hour"
+  cpus: 4
+  memory: "16G"
+  gpus: 1
+  time: "01:00:00"

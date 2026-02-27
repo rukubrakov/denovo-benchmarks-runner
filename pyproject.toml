@@ -1,0 +1,21 @@
+[project]
+name = "denovo-benchmarks-runner"
+version = "0.1.0"
+description = "Orchestration system for running de novo peptide sequencing benchmarks on HPC"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = []
