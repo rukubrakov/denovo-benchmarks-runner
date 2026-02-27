@@ -58,6 +58,24 @@ def check_outputs(config: dict) -> set[tuple[str, str]]:
     return existing
 
 
+def check_evaluation_container(config: dict) -> bool:
+    """
+    Check if evaluation container exists on Alexandria.
+    Returns True if exists, False otherwise.
+    """
+    host = config["alexandria"]["host"]
+    containers_base = config["alexandria"]["containers_path"]
+    evaluation_path = f"{containers_base}/evaluation/evaluation.sif"
+
+    result = subprocess.run(
+        ["ssh", host, f'test -f {evaluation_path} && echo "exists" || echo "missing"'],
+        capture_output=True,
+        text=True,
+    )
+
+    return result.stdout.strip() == "exists"
+
+
 def check_containers(config: dict, algorithms: list[dict[str, str]]) -> dict[str, bool]:
     """
     Check which containers exist on Alexandria.

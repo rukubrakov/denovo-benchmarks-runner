@@ -16,6 +16,23 @@ alexandria:
 datasets:
   - "test_dataset_human"
 
+# Algorithms to exclude from processing
+excluded_algorithms:
+  - "ContraNovo"
+  - "DePS"
+  - "adanovo"
+  - "biatNovo-DDA"
+  - "deepnovo"
+  - "gcnovo"
+  - "mock_algo"
+  - "novor"
+  - "pairwise"
+  - "pepnet"
+  - "pi-HelixNovo"
+  - "pi-PrimeNovo"
+  - "smsnet"
+  - "spectralis"
+
 # Version strategy
 # Options: "latest_only" (only process latest versions)
 #          "all_versions" (not yet implemented)

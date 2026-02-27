@@ -10,7 +10,10 @@ from pathlib import Path
 import yaml
 
 from runner import (
+    check_and_build_evaluation_container,
+    check_and_display_builds,
     check_containers,
+    check_evaluation_container,
     check_or_clone_repo,
     check_outputs,
     display_algorithms,
@@ -20,6 +23,8 @@ from runner import (
     print_info,
     print_step,
     print_success,
+    submit_build_job,
+    submit_evaluation_build,
 )
 
 
@@ -113,6 +118,31 @@ def main():
 
     # Check containers
     container_status = check_containers(config, algorithms)
+
+    # Check evaluation container
+    evaluation_exists = check_evaluation_container(config)
+
+    # Check and manage container builds
+    needs_building, build_state = check_and_display_builds(config, algorithms, container_status)
+
+    # Submit builds for missing containers (default behavior)
+    if needs_building:
+        print_header("Submitting Algorithm Container Build Jobs")
+        for algo_name, version in needs_building:
+            submit_build_job(config, algo_name, version, build_state)
+        print()
+
+        # Re-check container status after submitting builds
+        print_step("Rechecking container status...")
+        container_status = check_containers(config, algorithms)
+        print()
+
+    # Check and build evaluation container
+    needs_eval_build = check_and_build_evaluation_container(config, evaluation_exists)
+    if needs_eval_build:
+        print_header("Submitting Evaluation Container Build Job")
+        submit_evaluation_build(config, build_state)
+        print()
 
     # Analyze what's missing
     analyze_missing(config, algorithms, existing_outputs, container_status)

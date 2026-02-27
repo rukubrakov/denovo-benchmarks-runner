@@ -6,7 +6,7 @@ Simple orchestration for running de novo peptide sequencing benchmarks on HPC wi
 
 ### Prerequisites
 
-- Python 3.6+
+- Python 3.12
 - [uv](https://github.com/astral-sh/uv) package manager
 - SSH access to Alexandria configured
 - Slurm cluster access
@@ -49,7 +49,7 @@ uv run ruff check --fix .
 
 ## Quick Start
 
-**Check status:**
+**Run orchestration:**
 ```bash
 uv run orchestrate.py
 ```
@@ -57,9 +57,17 @@ uv run orchestrate.py
 This will:
 - Clone or update the `denovo_benchmarks` repository
 - Discover all algorithms with their versions
-- Check what outputs are already on Alexandria
-- Check which containers are built
+- Check what containers and outputs exist on Alexandria
+- **Automatically build missing algorithm and evaluation containers**
+- Track build progress with persistent state in `build_state.json`
 - Report what's missing and ready to run
+
+**How container building works:**
+- Algorithm and evaluation containers built on Asimov with Apptainer
+- Automatically transferred to Alexandria after successful builds
+- Build state tracked persistently to prevent duplicate submissions
+- Failed builds can be automatically retried on next run
+- Run `orchestrate.py` again to check build progress and status updates
 
 ## Project Structure
 
@@ -74,8 +82,16 @@ denovo-benchmarks-runner/
 │   ├── display.py           # Display/UI utilities
 │   ├── git_ops.py           # Git operations
 │   ├── alexandria.py        # Alexandria storage operations
-│   └── algorithms.py        # Algorithm discovery
-├── slurm_job_template.sh    # Slurm job template
+│   ├── algorithms.py        # Algorithm discovery
+│   ├── build_state.py       # Container build state tracking
+│   └── container_builder.py # Container building orchestration
+├── container_overrides/     # Optional container.def overrides
+│   └── algorithm_name/
+│       └── version/
+│           └── container.def
+├── templates/
+│   └── build_container.slurm.sh  # Container build job template
+├── slurm_job_template.sh    # Benchmark run job template
 └── submit_job.py            # Job submission script
 ```
 
@@ -85,7 +101,7 @@ Edit `config.yaml` for your setup:
 
 ```yaml
 denovo_benchmarks:
-  local_path: "denovo_benchmarks"  # Inside this directory (auto-cloned)
+  local_path: "denovo_benchmarks"  # Inside this directory
   repo_url: "git@github.com:bittremieuxlab/denovo_benchmarks.git"
   branch: "main"
 
@@ -97,15 +113,42 @@ alexandria:
 datasets:
   - "test_dataset_human"  # Add more datasets as needed
 
+# Exclude specific algorithms from processing
+excluded_algorithms:
+  - "algorithm_name"
+
+# Slurm resource defaults for container builds
+slurm:
+  partition: "one_hour"
+  cpus: 4
+  memory: "16G"
+  time: "01:00:00"
+
 version_strategy: "latest_only"  # Only process latest versions
 ```
+
+## Container Overrides
+
+If you need to customize a container definition for a specific algorithm, create an override:
+
+```bash
+mkdir -p container_overrides/algorithm_name/version/
+cp denovo_benchmarks/algorithms/algorithm_name/container.def \
+   container_overrides/algorithm_name/version/container.def
+# Edit the override file
+```
+
+Example: The casanovo override limits PyTorch to <2.6 to avoid compatibility issues.
+
+When building, the system checks for overrides first and uses them if available.
 
 ## Workflow
 
 1. Run `orchestrate.py` to see what's missing
-2. Build missing containers if needed
-3. Run benchmark jobs for missing combinations
-4. Results get stored on Alexandria
+2. System automatically builds missing algorithm and evaluation containers
+3. Check build status by running `orchestrate.py` again
+4. Run benchmark jobs for missing combinations
+5. Results get stored on Alexandria
 
 ## Storage Structure
 
@@ -113,42 +156,14 @@ version_strategy: "latest_only"  # Only process latest versions
 ```
 /mnt/data/nkubrakov/denovo_benchmarks/
 ├── containers/
+│   ├── evaluation/
+│   │   └── evaluation.sif     # Evaluation container
 │   └── algorithm_name/
 │       └── version/
-│           └── container.sif
+│           └── container.sif  # Algorithm containers
 └── outputs/
     └── algorithm_name/
         └── version/
             └── dataset_name/
                 └── output.csv
 ```
-
-## Testing Data Transfer
-
-Test script is included to verify Asimov ↔ Alexandria connectivity:
-```bash
-sbatch test_alexandria_transfer.slurm.sh
-```
-
-## Requirements
-
-- Python 3.6+
-- [uv](https://github.com/astral-sh/uv) package manager
-- SSH access to Alexandria configured
-- Slurm cluster access
-
-## Notes
-
-- System focuses on **latest versions only** by default
-- All outputs archived to Alexandria automatically
-- Containers stored on Alexandria to save Asimov space
-
-## Additional Documentation
-
-See [README_OLD.md](README_OLD.md) for detailed technical documentation from the original setup, including:
-- Manual container building steps
-- Detailed troubleshooting
-- Slurm configuration details
-- Technical context for the system
-
-See `README_OLD.md` for detailed technical documentation from previous setup.
