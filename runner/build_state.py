@@ -65,6 +65,13 @@ class BuildState:
         key = self.get_key(algo_name, version)
         return self.states.get(key)
 
+    def clear_status(self, algo_name: str, version: str):
+        """Clear build status for algorithm (useful for retrying after fixing errors)."""
+        key = self.get_key(algo_name, version)
+        if key in self.states:
+            del self.states[key]
+            self._save()
+
     def check_job_status(self, job_id: str) -> str:
         """
         Check Slurm job status.
@@ -99,10 +106,60 @@ class BuildState:
                     ]
                 ):
                     return "failed"
-            return "unknown"
+            
+            # Fallback: sacct unavailable or failed, check log files
+            # This handles systems with accounting disabled
+            return self._check_job_logs(job_id)
 
         # Job still in queue
         return "running"
+
+    def _check_job_logs(self, job_id: str) -> str:
+        """
+        Fallback method to check job status from log files.
+        Used when sacct is unavailable (accounting disabled).
+        """
+        runner_dir = Path(__file__).parent.parent
+        logs_dir = runner_dir / "logs"
+        
+        # Find error log for this job
+        error_logs = list(logs_dir.glob(f"build_*_{job_id}.err"))
+        
+        if not error_logs:
+            return "unknown"
+        
+        error_log = error_logs[0]
+        
+        try:
+            with open(error_log, "r") as f:
+                content = f.read()
+                
+            # Check for failure indicators
+            failure_indicators = [
+                "FATAL:",
+                "exit status 1",
+                "✗ Container build failed",
+                "✗ Transfer to Alexandria failed",
+                "Error:",
+                "FAILED",
+            ]
+            
+            if any(indicator in content for indicator in failure_indicators):
+                return "failed"
+            
+            # Check for success indicators
+            success_indicators = [
+                "Container Build Complete!",
+                "✓ Container transferred to Alexandria",
+            ]
+            
+            if any(indicator in content for indicator in success_indicators):
+                return "completed"
+                
+        except Exception:
+            pass
+        
+        return "unknown"
 
     def update_from_slurm(self, config: dict = None):
         """

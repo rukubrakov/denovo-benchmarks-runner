@@ -20,7 +20,6 @@ datasets:
 excluded_algorithms:
   - "ContraNovo"
   - "DePS"
-  - "adanovo"
   - "biatNovo-DDA"
   - "deepnovo"
   - "gcnovo"

@@ -131,6 +131,7 @@ def check_and_display_builds(
 
     # Reconcile build state with Alexandria reality
     # If container exists but state says building/failed, mark as completed
+    # If container missing but state says completed, clear the state for rebuild
     for algo in algorithms:
         algo_name = algo["name"]
         version = algo["version"]
@@ -142,6 +143,11 @@ def check_and_display_builds(
                 f"Reconciling: {algo_name} ({version}) exists, state was '{build_status['status']}'"
             )
             build_state.mark_completed(algo_name, version)
+        elif not container_exists and build_status and build_status["status"] == "completed":
+            print_step(
+                f"Reconciling: {algo_name} ({version}) completed but container missing - will rebuild"
+            )
+            build_state.clear_status(algo_name, version)
 
     # Check each algorithm
     needs_building = []
@@ -166,14 +172,9 @@ def check_and_display_builds(
             # Currently building
             currently_building.append((algo_name, version, status["job_id"]))
         elif status["status"] == "failed":
-            # Previous build failed
+            # Previous build failed - do NOT auto-retry
+            # User must fix the issue and clear the error state first
             has_errors.append((algo_name, version, status.get("error", "Unknown error")))
-            needs_building.append((algo_name, version))
-        elif status["status"] == "completed":
-            # Build completed but container not found on Alexandria
-            print_warning(
-                f"{algo_name} ({version}): Build completed but container missing on Alexandria"
-            )
 
     # Display status
     if currently_building:
@@ -186,6 +187,11 @@ def check_and_display_builds(
         print_warning(f"{len(has_errors)} container(s) with previous build errors:")
         for algo_name, version, error in has_errors:
             print(f"    ❌ {algo_name} ({version}): {error}")
+        print()
+        print_info("To retry after fixing issues, remove from build_state.json:")
+        for algo_name, version, _ in has_errors:
+            key = f'"{algo_name}@{version}"'
+            print(f"    • Edit build_state.json and remove the {key} entry")
         print()
 
     if needs_building:
