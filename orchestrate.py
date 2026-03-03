@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Denovo Benchmarks Orchestration System
-Simple script to check status and prepare for benchmark runs.
+Prefect-powered workflow for managing benchmark runs.
 """
 
 import sys
 from pathlib import Path
 
 import yaml
+from prefect import flow, task
 
 from runner import (
     check_and_build_evaluation_container,
@@ -28,12 +29,14 @@ from runner import (
 )
 
 
+@task(name="Load Configuration")
 def load_config() -> dict:
     config_path = Path(__file__).parent / "config.yaml"
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
+@task(name="Analyze Missing Combinations")
 def analyze_missing(
     config: dict,
     algorithms: list[dict[str, str]],
@@ -99,6 +102,7 @@ def analyze_missing(
     print()
 
 
+@flow(name="Denovo Benchmarks Orchestration", log_prints=True)
 def main():
     """Main orchestration flow."""
     print_banner()

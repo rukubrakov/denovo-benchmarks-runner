@@ -5,6 +5,7 @@ description = "Orchestration system for running de novo peptide sequencing bench
 requires-python = ">=3.12"
 dependencies = [
     "pyyaml>=6.0",
+    "prefect>=3.0.0",
 ]
 
 [project.optional-dependencies]
