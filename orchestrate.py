@@ -11,13 +11,14 @@ import yaml
 from prefect import flow, task
 
 from runner import (
+    BuildState,
     check_and_build_evaluation_container,
     check_and_display_builds,
-    check_and_pull_datasets,
     check_containers,
     check_evaluation_container,
     check_or_clone_repo,
     check_outputs,
+    DatasetManager,
     display_algorithms,
     get_algorithms,
     print_banner,
@@ -25,8 +26,8 @@ from runner import (
     print_info,
     print_step,
     print_success,
-    submit_build_job,
-    submit_evaluation_build,
+    submit_and_wait_for_build,
+    submit_and_wait_for_pull,
 )
 
 
@@ -109,11 +110,54 @@ def analyze_missing(
     return missing_with_container, needed_datasets
 
 
-@task(name="Manage Datasets")
-def manage_datasets(config: dict, needed_datasets: set[str]):
-    """Check and pull needed datasets, cleanup unneeded ones."""
-    if needed_datasets:
-        check_and_pull_datasets(config, list(needed_datasets))
+@task(name="Build Containers")
+def build_containers_task(config: dict, needs_building: list[tuple[str, str]], build_state: BuildState) -> int:
+    """Build missing containers and wait for completion."""
+    if not needs_building:
+        return 0
+    
+    print_header("Building Algorithm Containers")
+    successful = 0
+    
+    for algo_name, version in needs_building:
+        print_info(f"Building {algo_name} ({version})...")
+        if submit_and_wait_for_build(config, algo_name, version, build_state):
+            successful += 1
+            print_success(f"✓ {algo_name} ({version}) built successfully")
+        else:
+            print_info(f"✗ {algo_name} ({version}) build failed")
+        print()
+    
+    return successful
+
+
+@task(name="Pull Datasets")
+def pull_datasets_task(config: dict, needed_datasets: set[str]) -> int:
+    """Pull needed datasets and wait for completion."""
+    if not needed_datasets:
+        return 0
+    
+    print_header("Pulling Datasets")
+    dataset_manager = DatasetManager()
+    successful = 0
+    
+    for dataset_name in needed_datasets:
+        # Check if already available
+        status = dataset_manager.get_status(dataset_name)
+        if status and status["status"] == "available":
+            print_success(f"✓ {dataset_name} already available")
+            successful += 1
+            continue
+        
+        print_info(f"Pulling {dataset_name}...")
+        if submit_and_wait_for_pull(config, dataset_name, dataset_manager):
+            successful += 1
+            print_success(f"✓ {dataset_name} pulled successfully")
+        else:
+            print_info(f"✗ {dataset_name} pull failed")
+        print()
+    
+    return successful
 
 
 @flow(name="Denovo Benchmarks Orchestration", log_prints=True)
@@ -143,30 +187,30 @@ def main():
     # Check and manage container builds
     needs_building, build_state = check_and_display_builds(config, algorithms, container_status)
 
-    # Submit builds for missing containers (default behavior)
+    # Build missing containers and wait for completion
     if needs_building:
-        print_header("Submitting Algorithm Container Build Jobs")
-        for algo_name, version in needs_building:
-            submit_build_job(config, algo_name, version, build_state)
-        print()
-
-        # Re-check container status after submitting builds
+        built_count = build_containers_task(config, needs_building, build_state)
+        print_info(f"Built {built_count}/{len(needs_building)} containers")
+        
+        # Re-check container status after builds complete
         print_step("Rechecking container status...")
         container_status = check_containers(config, algorithms)
         print()
 
-    # Check and build evaluation container
+    # Check and build evaluation container (simplified - no waiting for now)
     needs_eval_build = check_and_build_evaluation_container(config, evaluation_exists)
     if needs_eval_build:
-        print_header("Submitting Evaluation Container Build Job")
-        submit_evaluation_build(config, build_state)
+        print_info("Evaluation container needs building (implement waiting pattern if needed)")
         print()
 
     # Analyze what's missing
     missing_with_container, needed_datasets = analyze_missing(config, algorithms, existing_outputs, container_status)
 
-    # Check and pull only needed datasets, cleanup unneeded ones
-    manage_datasets(config, needed_datasets)
+    # Pull needed datasets and wait for completion
+    if needed_datasets:
+        pulled_count = pull_datasets_task(config, needed_datasets)
+        print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets")
+        print()
 
     print()
 

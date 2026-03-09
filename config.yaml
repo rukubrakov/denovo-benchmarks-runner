@@ -22,6 +22,11 @@ local_datasets:
 # Datasets to process
 datasets:
   - "test_dataset_human"
+  - 9_species_human
+  - 9_species_mus_musculus
+  - 9_species_solanum_lycopersicum
+  - test_dataset_multiprotease
+
 
 # Algorithms to exclude from processing
 excluded_algorithms:

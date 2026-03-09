@@ -1,15 +1,21 @@
 """Runner package for denovo benchmarks orchestration."""
 
-from .alexandria import check_containers, check_evaluation_container, check_outputs
+from .alexandria import check_container_exists, check_containers, check_evaluation_container, check_outputs
 from .algorithms import display_algorithms, get_algorithms
 from .build_state import BuildState
 from .container_builder import (
     check_and_build_evaluation_container,
     check_and_display_builds,
+    submit_and_wait_for_build,
     submit_build_job,
     submit_evaluation_build,
 )
-from .dataset_manager import DatasetManager, check_and_pull_datasets, submit_pull_job
+from .dataset_manager import (
+    DatasetManager,
+    check_and_pull_datasets,
+    submit_and_wait_for_pull,
+    submit_pull_job,
+)
 from .display import (
     print_banner,
     print_error,
@@ -20,12 +26,14 @@ from .display import (
     print_warning,
 )
 from .git_ops import check_or_clone_repo
+from .job_waiter import wait_for_job_completion
 
 __all__ = [
     "get_algorithms",
     "display_algorithms",
     "check_outputs",
     "check_containers",
+    "check_container_exists",
     "check_evaluation_container",
     "check_or_clone_repo",
     "print_header",
@@ -39,8 +47,11 @@ __all__ = [
     "DatasetManager",
     "check_and_display_builds",
     "check_and_build_evaluation_container",
-    "check_and_pull_datasets",
     "submit_build_job",
+    "submit_and_wait_for_build",
     "submit_evaluation_build",
     "submit_pull_job",
+    "submit_and_wait_for_pull",
+    "check_and_pull_datasets",
+    "wait_for_job_completion",
 ]

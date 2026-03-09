@@ -322,8 +322,54 @@ def submit_pull_job(
 
             return job_id
     else:
-        print_error(f"Failed to submit pull job: {result.stderr}")
+        error_msg = result.stderr.strip()
+        if "Unable to contact slurm controller" in error_msg:
+            print_error("Slurm controller is unreachable - cluster may be down")
+            print_error("Please check cluster status or contact administrators")
+        else:
+            print_error(f"Failed to submit pull job: {error_msg}")
         return None
+
+
+def submit_and_wait_for_pull(
+    config: dict, dataset_name: str, dataset_manager: DatasetManager
+) -> bool:
+    """
+    Submit a dataset pull job and wait for it to complete.
+    Returns True if successful, False otherwise.
+    """
+    from .job_waiter import wait_for_job_completion
+
+    job_id = submit_pull_job(config, dataset_name, dataset_manager)
+    
+    if not job_id:
+        return False
+    
+    # Wait for completion
+    runner_dir = Path(__file__).parent.parent
+    datasets_dir = runner_dir / config["local_datasets"]["path"]
+    
+    success, status = wait_for_job_completion(
+        job_id=job_id,
+        job_name=f"dataset {dataset_name} pull",
+        check_interval=60,
+        log_pattern=f"pull_{dataset_name}_{job_id}.out",
+        success_marker="Dataset Pull Complete!",
+    )
+    
+    if success:
+        # Verify dataset exists on disk
+        if check_dataset_on_asimov(datasets_dir, dataset_name):
+            dataset_manager.mark_available(dataset_name)
+            return True
+        else:
+            from .display import print_error
+            print_error(f"Pull completed but dataset not found on Asimov")
+            dataset_manager.mark_removed(dataset_name)
+            return False
+    else:
+        dataset_manager.mark_removed(dataset_name)
+        return False
 
 
 def check_and_pull_datasets(config: dict, datasets: list[str]):

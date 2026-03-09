@@ -76,6 +76,29 @@ def check_evaluation_container(config: dict) -> bool:
     return result.stdout.strip() == "exists"
 
 
+def check_container_exists(config: dict, algo_name: str, version: str) -> bool:
+    """
+    Check if a specific container exists on Alexandria.
+    Returns True if exists, False otherwise.
+    """
+    host = config["alexandria"]["host"]
+    containers_base = config["alexandria"]["containers_path"]
+    
+    # Special handling for evaluation container
+    if algo_name == "evaluation":
+        container_path = f"{containers_base}/evaluation/evaluation.sif"
+    else:
+        container_path = f"{containers_base}/{algo_name}/{version}/container.sif"
+
+    result = subprocess.run(
+        ["ssh", host, f'test -f {container_path} && echo "exists" || echo "missing"'],
+        capture_output=True,
+        text=True,
+    )
+
+    return result.stdout.strip() == "exists"
+
+
 def check_containers(config: dict, algorithms: list[dict[str, str]]) -> dict[str, bool]:
     """
     Check which containers exist on Alexandria.

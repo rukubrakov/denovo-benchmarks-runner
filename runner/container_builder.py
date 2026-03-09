@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .build_state import BuildState
 from .display import print_error, print_header, print_info, print_step, print_success, print_warning
+from .job_waiter import wait_for_job_completion
 
 
 def get_container_def_path(
@@ -103,8 +104,53 @@ def submit_build_job(
 
             return job_id
     else:
-        print_error(f"Failed to submit build job: {result.stderr}")
+        error_msg = result.stderr.strip()
+        if "Unable to contact slurm controller" in error_msg:
+            print_error("Slurm controller is unreachable - cluster may be down")
+            print_error("Please check cluster status or contact administrators")
+        else:
+            print_error(f"Failed to submit build job: {error_msg}")
         return None
+
+
+def submit_and_wait_for_build(
+    config: dict,
+    algo_name: str,
+    version: str,
+    build_state: BuildState,
+    slurm_resources: dict | None = None,
+) -> bool:
+    """
+    Submit a container build job and wait for it to complete.
+    Returns True if successful, False otherwise.
+    """
+    job_id = submit_build_job(config, algo_name, version, build_state, slurm_resources)
+    
+    if not job_id:
+        return False
+    
+    # Wait for completion
+    success, status = wait_for_job_completion(
+        job_id=job_id,
+        job_name=f"{algo_name} ({version}) build",
+        check_interval=60,
+        log_pattern=f"build_{algo_name}_{version}_{job_id}.out",
+        success_marker="Container build and transfer complete!",
+    )
+    
+    if success:
+        # Verify container exists on Alexandria
+        from .alexandria import check_container_exists
+        if check_container_exists(config, algo_name, version):
+            build_state.mark_completed(algo_name, version)
+            return True
+        else:
+            print_error(f"Build completed but container not found on Alexandria")
+            build_state.mark_failed(algo_name, version, "Container not found after build")
+            return False
+    else:
+        build_state.mark_failed(algo_name, version, f"Build job {status}")
+        return False
 
 
 def check_and_display_builds(
