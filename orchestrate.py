@@ -13,6 +13,7 @@ from prefect import flow, task
 from runner import (
     check_and_build_evaluation_container,
     check_and_display_builds,
+    check_and_pull_datasets,
     check_containers,
     check_evaluation_container,
     check_or_clone_repo,
@@ -42,9 +43,10 @@ def analyze_missing(
     algorithms: list[dict[str, str]],
     existing_outputs: set[tuple[str, str]],
     container_status: dict[str, bool],
-):
+) -> tuple[list[tuple[str, str]], set[str]]:
     """
     Analyze and report what's missing.
+    Returns: (missing_with_container, needed_datasets)
     """
     print_header("Missing Combinations Analysis")
 
@@ -61,7 +63,7 @@ def analyze_missing(
 
     if not missing:
         print_success("All combinations have outputs! Nothing to process.")
-        return
+        return [], set()
 
     print_info(f"Total possible combinations: {len(all_combinations)}")
     print_info(f"Existing outputs: {len(existing_outputs)}")
@@ -90,6 +92,9 @@ def analyze_missing(
             print(f"    ⚠ {algo} + {dataset}")
         print()
 
+    # Extract needed datasets (only for missing combinations)
+    needed_datasets = set(dataset for _, dataset in missing)
+
     # Summary
     print_header("Summary")
     print(f"  • Algorithms found: {len(algorithms)}")
@@ -100,6 +105,15 @@ def analyze_missing(
     print(f"    - Ready to run: {len(missing_with_container)}")
     print(f"    - Need container: {len(missing_without_container)}")
     print()
+
+    return missing_with_container, needed_datasets
+
+
+@task(name="Manage Datasets")
+def manage_datasets(config: dict, needed_datasets: set[str]):
+    """Check and pull needed datasets, cleanup unneeded ones."""
+    if needed_datasets:
+        check_and_pull_datasets(config, list(needed_datasets))
 
 
 @flow(name="Denovo Benchmarks Orchestration", log_prints=True)
@@ -149,7 +163,10 @@ def main():
         print()
 
     # Analyze what's missing
-    analyze_missing(config, algorithms, existing_outputs, container_status)
+    missing_with_container, needed_datasets = analyze_missing(config, algorithms, existing_outputs, container_status)
+
+    # Check and pull only needed datasets, cleanup unneeded ones
+    manage_datasets(config, needed_datasets)
 
     print()
 

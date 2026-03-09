@@ -9,6 +9,7 @@ from .container_builder import (
     submit_build_job,
     submit_evaluation_build,
 )
+from .dataset_manager import DatasetManager, check_and_pull_datasets, submit_pull_job
 from .display import (
     print_banner,
     print_error,
@@ -35,8 +36,11 @@ __all__ = [
     "print_warning",
     "print_error",
     "BuildState",
+    "DatasetManager",
     "check_and_display_builds",
     "check_and_build_evaluation_container",
+    "check_and_pull_datasets",
     "submit_build_job",
     "submit_evaluation_build",
+    "submit_pull_job",
 ]

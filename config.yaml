@@ -10,7 +10,14 @@ denovo_benchmarks:
 alexandria:
   outputs_path: "/mnt/data/nkubrakov/denovo_benchmarks/outputs"
   containers_path: "/mnt/data/nkubrakov/denovo_benchmarks/containers"
+  datasets_path: "/mnt/data/nkubrakov/denovo_benchmarks/datasets"
   host: "nkubrakov@alexandria.uantwerpen.be"
+
+# Local dataset management on Asimov
+local_datasets:
+  path: "/home/nkubrakov/denovo-benchmarks-runner/datasets"
+  max_size_gb: 50  # Maximum total size of datasets on Asimov
+  max_count: 3     # Maximum number of datasets on Asimov simultaneously
 
 # Datasets to process
 datasets:
