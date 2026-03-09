@@ -65,7 +65,7 @@ def check_or_clone_repo(config: dict) -> bool:
         if commits_behind > 0:
             print_step(f"Repository is {commits_behind} commit(s) behind. Pulling...")
             result = subprocess.run(
-                ["git", "-C", str(repo_path), "pull"], capture_output=True, text=True
+                ["git", "-C", str(repo_path), "pull", "--rebase"], capture_output=True, text=True
             )
             if result.returncode == 0:
                 print_success("Repository updated successfully")
