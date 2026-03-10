@@ -12,7 +12,6 @@ from prefect import flow, task
 
 from runner import (
     BuildState,
-    check_and_build_evaluation_container,
     check_and_display_builds,
     check_containers,
     check_evaluation_container,
@@ -110,37 +109,31 @@ def analyze_missing(
     return missing_with_container, needed_datasets
 
 
-@task(name="Build Containers")
-def build_containers_task(config: dict, needs_building: list[tuple[str, str]], build_state: BuildState) -> int:
-    """Build missing containers and wait for completion."""
-    if not needs_building:
-        return 0
-    
-    print_header("Building Algorithm Containers")
-    successful = 0
-    
-    for algo_name, version in needs_building:
-        print_info(f"Building {algo_name} ({version})...")
-        if submit_and_wait_for_build(config, algo_name, version, build_state):
-            successful += 1
-            print_success(f"✓ {algo_name} ({version}) built successfully")
-        else:
-            print_info(f"✗ {algo_name} ({version}) build failed")
-        print()
-    
-    return successful
+@task(task_run_name="Build Container: {algo_name}")
+def build_single_container(config: dict, algo_name: str, version: str, build_state: BuildState) -> bool:
+    """Build a single container and wait for completion."""
+    print_info(f"Building {algo_name} ({version})...")
+    success = submit_and_wait_for_build(config, algo_name, version, build_state)
+    if success:
+        print_success(f"✓ {algo_name} ({version}) built successfully")
+    else:
+        print_info(f"✗ {algo_name} ({version}) build failed")
+    return success
 
 
-@task(name="Pull Datasets")
+@task(name="Pull All Datasets")
 def pull_datasets_task(config: dict, needed_datasets: set[str]) -> int:
-    """Pull needed datasets and wait for completion."""
+    """Pull needed datasets sequentially (to avoid space conflicts)."""
     if not needed_datasets:
         return 0
     
-    print_header("Pulling Datasets")
+    print_header("Pulling Datasets (Sequential)")
+    print_info(f"Pulling {len(needed_datasets)} datasets one at a time...")
+    
     dataset_manager = DatasetManager()
     successful = 0
     
+    # Pull sequentially to avoid space/state conflicts
     for dataset_name in needed_datasets:
         # Check if already available
         status = dataset_manager.get_status(dataset_name)
@@ -187,20 +180,31 @@ def main():
     # Check and manage container builds
     needs_building, build_state = check_and_display_builds(config, algorithms, container_status)
 
-    # Build missing containers and wait for completion
+    # Add evaluation container to builds if needed
+    if not evaluation_exists:
+        print_info("Evaluation container needs building - adding to queue")
+        needs_building.append(("evaluation", "latest"))
+
+    # Build missing containers (including evaluation) in parallel and wait for completion
     if needs_building:
-        built_count = build_containers_task(config, needs_building, build_state)
+        print_header("Building Algorithm Containers (Parallel)")
+        print_info(f"Submitting {len(needs_building)} build jobs in parallel...")
+        
+        # Submit all builds in parallel directly from flow
+        build_futures = []
+        for algo_name, version in needs_building:
+            future = build_single_container.submit(config, algo_name, version, build_state)
+            build_futures.append(future)
+        
+        # Wait for all to complete and count successes
+        build_results = [future.result() for future in build_futures]
+        built_count = sum(1 for success in build_results if success)
         print_info(f"Built {built_count}/{len(needs_building)} containers")
         
         # Re-check container status after builds complete
         print_step("Rechecking container status...")
         container_status = check_containers(config, algorithms)
-        print()
-
-    # Check and build evaluation container (simplified - no waiting for now)
-    needs_eval_build = check_and_build_evaluation_container(config, evaluation_exists)
-    if needs_eval_build:
-        print_info("Evaluation container needs building (implement waiting pattern if needed)")
+        evaluation_exists = check_evaluation_container(config)
         print()
 
     # Analyze what's missing
