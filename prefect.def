@@ -1,0 +1,69 @@
+Bootstrap: docker
+From: python:3.12-slim
+
+%post
+    # Update and install system dependencies
+    apt-get update && apt-get install -y \
+        git \
+        ssh \
+        rsync \
+        curl \
+        ca-certificates \
+        slurm-client \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install uv package manager
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="/root/.local/bin:$PATH"
+
+    # Create app directory
+    mkdir -p /app
+    cd /app
+
+    # Create directory for host Slurm plugins (version compatibility)
+    mkdir -p /usr/lib64/slurm
+
+    # Copy project files (will be bound at runtime)
+    # Dependencies will be installed when container runs
+
+%environment
+    export PATH="/root/.local/bin:$PATH"
+    export PREFECT_HOME=/app/.prefect
+    # Fix SSL certificate path for Debian-based images
+    export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    # Don't set PREFECT_API_URL - let clients configure it
+
+%runscript
+    # Default: show help
+    echo "Prefect Orchestration Container"
+    echo ""
+    echo "Available commands:"
+    echo "  server    - Start Prefect server (dashboard)"
+    echo "  worker    - Start orchestration worker"
+    echo "  run       - Run orchestration once"
+    echo ""
+    echo "Usage: apptainer run prefect.sif <command>"
+
+%startscript
+    # This runs when using 'apptainer instance start'
+    cd /app
+    exec uv run prefect server start --host 0.0.0.0
+
+%labels
+    Author nkubrakov
+    Version 1.0
+    Description Prefect orchestration for denovo benchmarks
+
+%help
+    This container provides Prefect orchestration for denovo benchmarks.
+    
+    Usage:
+    ------
+    # Start Prefect server (dashboard)
+    apptainer instance start --bind $(pwd):/app prefect.sif prefect-server
+    
+    # Run orchestration workflow
+    apptainer run --bind $(pwd):/app prefect.sif run
+    
+    # Stop server
+    apptainer instance stop prefect-server

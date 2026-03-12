@@ -19,8 +19,14 @@ uv.lock
 *.swo
 *~
 
+# Conteiners
+*.sif
+
 # Project specific
 denovo_benchmarks/
 logs/
 slurm_jobs/
 build_state.json
+.prefect/
+datasets/
+dataset_state.json
