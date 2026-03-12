@@ -1,11 +1,34 @@
 """Container building operations."""
 
+import os
 import subprocess
 from pathlib import Path
 
 from .build_state import BuildState
 from .display import print_error, print_header, print_info, print_step, print_success, print_warning
 from .job_waiter import wait_for_job_completion
+
+
+def get_runner_dir() -> Path:
+    """
+    Get runner directory, handling both containerized and bare-host execution.
+    
+    When running in Apptainer container:
+    - Worker runs at /app (bound from host directory)
+    - But Slurm jobs run on bare host
+    - Jobs need absolute host path, not container path
+    
+    Solution: Detect container execution and return host path.
+    """
+    runner_dir = Path(__file__).parent.parent
+    
+    # Check if running in Apptainer/Singularity container
+    if os.environ.get("APPTAINER_NAME") or os.environ.get("SINGULARITY_NAME"):
+        # We're in container - /app is bound, but Slurm jobs run on host
+        # Return absolute host path for job scripts
+        runner_dir = Path("/home/nkubrakov/denovo-benchmarks-runner")
+    
+    return runner_dir
 
 
 def get_container_def_path(
@@ -20,7 +43,7 @@ def get_container_def_path(
     if algo_name == "evaluation":
         return benchmarks_dir / "evaluation.def"
 
-    runner_dir = Path(__file__).parent.parent
+    runner_dir = get_runner_dir()
     override_path = runner_dir / "container_overrides" / algo_name / version / "container.def"
 
     if override_path.exists():
@@ -42,7 +65,7 @@ def submit_build_job(
     Submit a Slurm job to build a container.
     Returns job ID if successful, None otherwise.
     """
-    runner_dir = Path(__file__).parent.parent
+    runner_dir = get_runner_dir()
     benchmarks_dir = runner_dir / config["denovo_benchmarks"]["local_path"]
 
     # Get container def path (check for override)

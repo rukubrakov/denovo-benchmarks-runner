@@ -51,7 +51,7 @@ uv run ruff check --fix .
 
 ### Option 1: Apptainer Deployment
 
-**Hybrid deployment: containerized dashboard + bare-host worker for seamless Slurm integration.**
+**Containerized dashboard and worker with Slurm integration.**
 
 **Initial setup:**
 ```bash
@@ -61,27 +61,17 @@ cd /home/nkubrakov/denovo-benchmarks-runner
 ./build_prefect_container.sh
 ```
 
-**Start everything:**
+**Start server:**
 ```bash
-# Terminal 1: Start Prefect server
+# Start Prefect server (runs in background)
 ./run_prefect_server.sh
-# Server runs in background, dashboard at http://localhost:4200
-
-# Terminal 2: Start deployment worker
-./run_deployment_worker_bare.sh
-# Worker runs on bare host for direct Slurm access
+# Dashboard available at http://localhost:4200
 ```
 
-**Or use screen for persistence:**
+**Start worker:**
 ```bash
-screen -dmS prefect-server ./run_prefect_server.sh
-screen -dmS prefect-worker ./run_deployment_worker_bare.sh
-
-# Check status
-screen -ls
-
-# Attach to see logs: screen -r prefect-worker
-# Detach: Ctrl+A, then D
+# Start worker in detached screen session
+screen -dmS prefect-worker ./run_deployment_worker.sh
 ```
 
 **Access dashboard from local machine:**
@@ -96,31 +86,30 @@ ssh -L 4200:localhost:4200 nkubrakov@asimov.uantwerpen.be
 - Navigate to **Deployments** → **denovo-benchmarks-runner** → **Run**
 - Watch progress in **Flow Runs** tab with real-time updates
 
-**Check Status:**
+**Check worker status:**
 ```bash
-# Check running processes
-ps aux | grep -E "(prefect|deploy)" | grep -v grep
-
-# Check screen sessions
+# Check if screen session is running
 screen -ls
 
-# Attach to worker logs
+# Attach to worker screen session (Ctrl+A, D to detach)
 screen -r prefect-worker
+
+# Check running processes
+ps aux | grep -E "(prefect-worker|deploy)" | grep -v grep
 ```
 
 **Stop everything:**
 ```bash
 # Stop worker
-pkill -f "uv run python deploy.py"
-# Or: screen -X -S prefect-worker quit
+screen -X -S prefect-worker quit
 
 # Stop server
 ./stop_prefect_server.sh
 ```
 
 **Architecture:**
-- **Server**: Apptainer container
-- **Worker**: Bare host
+- **Server**: Apptainer container (isolated, persists after logout)
+- **Worker**: Apptainer container with host Slurm bindings (runs in screen)
 - **Jobs**: Slurm queue (container builds, dataset pulls)
 
 ---

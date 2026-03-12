@@ -6,13 +6,15 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from .container_builder import get_runner_dir
+
 
 class DatasetManager:
     """Manage datasets on Asimov with size and count constraints."""
 
     def __init__(self, state_file: Path = None):
         if state_file is None:
-            state_file = Path(__file__).parent.parent / "dataset_state.json"
+            state_file = get_runner_dir() / "dataset_state.json"
         self.state_file = state_file
         self.states = self._load()
 
@@ -151,7 +153,7 @@ class DatasetManager:
         Used when sacct is unavailable.
         """
         # Look for log files in logs directory
-        runner_dir = Path(__file__).parent.parent
+        runner_dir = get_runner_dir()
         log_dir = runner_dir / "logs"
         
         if not log_dir.exists():
@@ -251,7 +253,7 @@ def submit_pull_job(
     """
     from .display import print_error, print_success
 
-    runner_dir = Path(__file__).parent.parent
+    runner_dir = get_runner_dir()
 
     # Get dataset size on Alexandria
     size_bytes = get_dataset_size_on_alexandria(config, dataset_name)
@@ -346,7 +348,7 @@ def submit_and_wait_for_pull(
         return False
     
     # Wait for completion
-    runner_dir = Path(__file__).parent.parent
+    runner_dir = get_runner_dir()
     datasets_dir = runner_dir / config["local_datasets"]["path"]
     
     success, status = wait_for_job_completion(
@@ -382,7 +384,7 @@ def check_and_pull_datasets(config: dict, datasets: list[str]):
     print_header("Dataset Management")
 
     dataset_manager = DatasetManager()
-    runner_dir = Path(__file__).parent.parent
+    runner_dir = get_runner_dir()
     datasets_dir = runner_dir / config["local_datasets"]["path"]
 
     # Update status of pulling jobs (pulling -> available/failed)

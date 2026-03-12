@@ -28,9 +28,11 @@ CONTAINER_DEF="{CONTAINER_DEF}"
 ALEXANDRIA_HOST="{ALEXANDRIA_HOST}"
 ALEXANDRIA_PATH="{ALEXANDRIA_PATH}"
 
-# Build location on Asimov (temporary)
-BUILD_DIR="/tmp/container_build_${{SLURM_JOB_ID}}"
+BUILD_DIR="$HOME/container_builds/build_${{SLURM_JOB_ID}}"
 CONTAINER_FILE="$BUILD_DIR/container.sif"
+export TMPDIR="$BUILD_DIR/tmp"
+export APPTAINER_TMPDIR="$BUILD_DIR/tmp"
+export APPTAINER_CACHEDIR="$BUILD_DIR/cache"
 
 # Final location on Alexandria
 # Special handling for evaluation container
@@ -43,8 +45,17 @@ else
 fi
 
 echo "Step 1: Preparing build environment..."
-mkdir -p "$BUILD_DIR"
+mkdir -p "$BUILD_DIR/tmp" "$BUILD_DIR/cache"
 cd "$BENCHMARKS_DIR"
+
+echo "  Build directory: $BUILD_DIR"
+
+# Clear Apptainer/Singularity environment variables
+# These can be inherited from parent container and cause mount issues during build
+unset APPTAINER_BIND APPTAINER_BINDPATH
+unset SINGULARITY_BIND SINGULARITY_BINDPATH
+unset APPTAINER_NAME SINGULARITY_NAME
+unset APPTAINER_CONTAINER SINGULARITY_CONTAINER
 
 echo "Step 2: Building container..."
 echo "  Using definition: $CONTAINER_DEF"
