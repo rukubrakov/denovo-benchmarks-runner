@@ -30,8 +30,9 @@ ALEXANDRIA_PATH="{ALEXANDRIA_PATH}"
 
 BUILD_DIR="$HOME/container_builds/build_${{SLURM_JOB_ID}}"
 CONTAINER_FILE="$BUILD_DIR/container.sif"
-export TMPDIR="$BUILD_DIR/tmp"
-export APPTAINER_TMPDIR="$BUILD_DIR/tmp"
+# Use system /tmp for Apptainer's temporary build operations
+export TMPDIR="/tmp/apptainer_build_${{SLURM_JOB_ID}}"
+export APPTAINER_TMPDIR="/tmp/apptainer_build_${{SLURM_JOB_ID}}"
 export APPTAINER_CACHEDIR="$BUILD_DIR/cache"
 
 # Final location on Alexandria
@@ -45,10 +46,11 @@ else
 fi
 
 echo "Step 1: Preparing build environment..."
-mkdir -p "$BUILD_DIR/tmp" "$BUILD_DIR/cache"
+mkdir -p "$TMPDIR" "$BUILD_DIR/cache"
 cd "$BENCHMARKS_DIR"
 
 echo "  Build directory: $BUILD_DIR"
+echo "  Temp directory: $TMPDIR"
 
 # Clear Apptainer/Singularity environment variables
 # These can be inherited from parent container and cause mount issues during build
@@ -63,7 +65,7 @@ apptainer build "$CONTAINER_FILE" "$CONTAINER_DEF"
 
 if [ $? -ne 0 ]; then
     echo "✗ Container build failed"
-    rm -rf "$BUILD_DIR"
+    rm -rf "$BUILD_DIR" "$TMPDIR"
     exit 1
 fi
 
@@ -80,7 +82,7 @@ rsync -avz --progress "$CONTAINER_FILE" \
 
 if [ $? -ne 0 ]; then
     echo "✗ Transfer to Alexandria failed"
-    rm -rf "$BUILD_DIR"
+    rm -rf "$BUILD_DIR" "$TMPDIR"
     exit 1
 fi
 
@@ -91,7 +93,7 @@ echo "Step 5: Verifying container on Alexandria..."
 ssh "$ALEXANDRIA_HOST" "ls -lh $ALEXANDRIA_FULL_PATH/$CONTAINER_FILENAME"
 
 echo "Step 6: Cleaning up temporary build directory..."
-rm -rf "$BUILD_DIR"
+rm -rf "$BUILD_DIR" "$TMPDIR"
 echo "✓ Cleanup complete"
 echo
 

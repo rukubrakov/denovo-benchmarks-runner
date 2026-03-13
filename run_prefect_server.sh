@@ -30,16 +30,26 @@ mkdir -p "$SCRIPT_DIR/.prefect"
 # Start server as persistent instance
 cd "$SCRIPT_DIR"
 apptainer instance start \
+    --writable-tmpfs \
     --bind "$(pwd):/app" \
     --env PREFECT_UI_API_URL="http://localhost:4200/api" \
+    --env PREFECT_HOME=/app/.prefect \
     "$CONTAINER" \
     "$INSTANCE_NAME"
 
-# Wait a moment for server to start
-sleep 3
+# Install other dependencies if needed
+echo "Setting up Python environment..."
+apptainer exec instance://$INSTANCE_NAME bash -c "cd /app && /root/.local/bin/uv sync" > /dev/null 2>&1
+
+# Now start Prefect server (uses system-wide installation with writable UI directory)
+sleep 2
+apptainer exec instance://$INSTANCE_NAME bash -c "cd /app && PREFECT_SERVER_ALLOW_EPHEMERAL_MODE=1 nohup prefect server start --host 0.0.0.0 > /app/.prefect_server.log 2>&1 &"
+
+# Wait for server to start
+sleep 8
 
 # Check if running
-if apptainer instance list | grep -q "$INSTANCE_NAME"; then
+if apptainer instance list | grep -q "$INSTANCE_NAME" && ss -tlnp 2>/dev/null | grep -q :4200; then
     echo ""
     echo "✓ Prefect server started successfully"
     echo ""
@@ -50,5 +60,7 @@ if apptainer instance list | grep -q "$INSTANCE_NAME"; then
     echo ""
 else
     echo "✗ Failed to start Prefect server"
+    echo "Instance running but server may need more time to start"
+    echo "Check with: ss -tlnp | grep 4200"
     exit 1
 fi

@@ -10,6 +10,7 @@ From: python:3.12-slim
         curl \
         ca-certificates \
         slurm-client \
+        python3-pip \
         && rm -rf /var/lib/apt/lists/*
 
     # Install uv package manager
@@ -22,6 +23,9 @@ From: python:3.12-slim
 
     # Create directory for host Slurm plugins (version compatibility)
     mkdir -p /usr/lib64/slurm
+    
+    # Install Prefect system-wide
+    pip3 install prefect --break-system-packages
 
     # Copy project files (will be bound at runtime)
     # Dependencies will be installed when container runs
@@ -47,7 +51,7 @@ From: python:3.12-slim
 %startscript
     # This runs when using 'apptainer instance start'
     cd /app
-    exec uv run prefect server start --host 0.0.0.0
+    exec prefect server start --host 0.0.0.0
 
 %labels
     Author nkubrakov
