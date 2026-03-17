@@ -62,6 +62,24 @@ class DatasetManager:
             del self.states[dataset_name]
             self._save()
 
+    def cleanup_dataset(self, dataset_name: str) -> bool:
+        """Remove dataset from Asimov and update state."""
+        from .display import print_info, print_success
+
+        datasets_dir = get_runner_dir() / "datasets"
+        dataset_path = datasets_dir / dataset_name
+
+        if dataset_path.exists():
+            print_info(f"Removing dataset from Asimov: {dataset_name}")
+            shutil.rmtree(dataset_path)
+            self.mark_removed(dataset_name)
+            print_success(f"✓ Cleaned up dataset: {dataset_name}")
+            return True
+        else:
+            print_info(f"Dataset not found on Asimov: {dataset_name}")
+            self.mark_removed(dataset_name)
+            return False
+
     def get_status(self, dataset_name: str) -> dict | None:
         """Get status of dataset."""
         return self.states.get(dataset_name)

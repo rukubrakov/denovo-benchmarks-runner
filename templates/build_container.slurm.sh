@@ -30,10 +30,15 @@ ALEXANDRIA_PATH="{ALEXANDRIA_PATH}"
 
 BUILD_DIR="$HOME/container_builds/build_${{SLURM_JOB_ID}}"
 CONTAINER_FILE="$BUILD_DIR/container.sif"
-# Use system /tmp for Apptainer's temporary build operations
-export TMPDIR="/tmp/apptainer_build_${{SLURM_JOB_ID}}"
-export APPTAINER_TMPDIR="/tmp/apptainer_build_${{SLURM_JOB_ID}}"
+
+# Cleanup on exit (success or failure) - set AFTER BUILD_DIR is defined
+trap 'rm -rf "$BUILD_DIR" 2>/dev/null || true' EXIT
+
+# Use user's home directory for Apptainer cache but let system TMPDIR handle temp operations
+# Setting TMPDIR can cause "no such file or directory" errors in nested temp dir creation
 export APPTAINER_CACHEDIR="$BUILD_DIR/cache"
+export PIP_CACHE_DIR="$BUILD_DIR/cache/pip"
+export PIP_NO_CACHE_DIR=1
 
 # Final location on Alexandria
 # Special handling for evaluation container
@@ -46,11 +51,10 @@ else
 fi
 
 echo "Step 1: Preparing build environment..."
-mkdir -p "$TMPDIR" "$BUILD_DIR/cache"
+mkdir -p "$APPTAINER_CACHEDIR" "$PIP_CACHE_DIR"
 cd "$BENCHMARKS_DIR"
 
 echo "  Build directory: $BUILD_DIR"
-echo "  Temp directory: $TMPDIR"
 
 # Clear Apptainer/Singularity environment variables
 # These can be inherited from parent container and cause mount issues during build
@@ -59,13 +63,18 @@ unset SINGULARITY_BIND SINGULARITY_BINDPATH
 unset APPTAINER_NAME SINGULARITY_NAME
 unset APPTAINER_CONTAINER SINGULARITY_CONTAINER
 
+# Clean up any existing container.sif and overlay files in algorithm directory to avoid copy conflicts
+if [ "$ALGO_NAME" != "evaluation" ]; then
+    rm -f "algorithms/$ALGO_NAME/container.sif" 2>/dev/null || true
+    rm -f "algorithms/$ALGO_NAME"/overlay_*.img 2>/dev/null || true
+fi
+
 echo "Step 2: Building container..."
 echo "  Using definition: $CONTAINER_DEF"
 apptainer build "$CONTAINER_FILE" "$CONTAINER_DEF"
 
 if [ $? -ne 0 ]; then
     echo "✗ Container build failed"
-    rm -rf "$BUILD_DIR" "$TMPDIR"
     exit 1
 fi
 
@@ -82,7 +91,6 @@ rsync -avz --progress "$CONTAINER_FILE" \
 
 if [ $? -ne 0 ]; then
     echo "✗ Transfer to Alexandria failed"
-    rm -rf "$BUILD_DIR" "$TMPDIR"
     exit 1
 fi
 
@@ -93,8 +101,7 @@ echo "Step 5: Verifying container on Alexandria..."
 ssh "$ALEXANDRIA_HOST" "ls -lh $ALEXANDRIA_FULL_PATH/$CONTAINER_FILENAME"
 
 echo "Step 6: Cleaning up temporary build directory..."
-rm -rf "$BUILD_DIR" "$TMPDIR"
-echo "✓ Cleanup complete"
+echo "✓ Will be cleaned by trap on exit"
 echo
 
 echo "========================================"

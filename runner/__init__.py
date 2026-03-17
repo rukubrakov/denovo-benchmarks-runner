@@ -1,6 +1,18 @@
 """Runner package for denovo benchmarks orchestration."""
 
-from .alexandria import check_container_exists, check_containers, check_evaluation_container, check_outputs
+from .alexandria import (
+    check_container_exists,
+    check_containers,
+    check_evaluation_container,
+    check_outputs,
+    get_outputs_needing_augmentation,
+)
+from .algorithm_runner import (
+    check_output_exists_on_alexandria,
+    cleanup_local_container,
+    pull_container_from_alexandria,
+    submit_and_wait_for_run,
+)
 from .algorithms import display_algorithms, get_algorithms
 from .build_state import BuildState
 from .container_builder import (
@@ -54,4 +66,8 @@ __all__ = [
     "submit_and_wait_for_pull",
     "check_and_pull_datasets",
     "wait_for_job_completion",
+    "pull_container_from_alexandria",
+    "submit_and_wait_for_run",
+    "check_output_exists_on_alexandria",
+    "cleanup_local_container",
 ]

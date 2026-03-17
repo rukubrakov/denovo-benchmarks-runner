@@ -30,3 +30,6 @@ build_state.json
 .prefect/
 datasets/
 dataset_state.json
+overlays/
+containers/
+outputs/

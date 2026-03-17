@@ -38,11 +38,12 @@ excluded_algorithms:
   - "mock_algo"
   - "novor"
   - "pairwise"
-  - "pepnet"
+  - "instanovo"
   - "pi-HelixNovo"
   - "pi-PrimeNovo"
   - "smsnet"
   - "spectralis"
+  - "pepnet"
 
 # Version strategy
 # Options: "latest_only" (only process latest versions)
