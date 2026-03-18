@@ -231,15 +231,9 @@ def run_single_combination(
     return success
 
 
-@flow(name="Denovo Benchmarks Orchestration", log_prints=True)
-def main():
-    """Main orchestration flow."""
-    print_banner()
-
-    # Load config
-    config = load_config()
-
-    # Cleanup ALL old files before starting the pipeline
+@task(name="Cleanup Workspace")
+def cleanup_workspace() -> None:
+    """Clean up all old files before starting the pipeline."""
     print_header("Cleanup Before Starting")
     import shutil
     runner_dir = Path(__file__).parent
@@ -297,8 +291,26 @@ def main():
     
     print()
 
-    # Check/clone/update repository
+
+@task(name="Check Repository")
+def check_repository(config: dict) -> None:
+    """Check, clone, or update the benchmarks repository."""
     check_or_clone_repo(config)
+
+
+@flow(name="Denovo Benchmarks Orchestration", log_prints=True)
+def main():
+    """Main orchestration flow."""
+    print_banner()
+
+    # Load config
+    config = load_config()
+
+    # Cleanup workspace
+    cleanup_workspace()
+
+    # Check/clone/update repository
+    check_repository(config)
 
     # Get and display algorithms
     algorithms = get_algorithms(config)
