@@ -117,9 +117,9 @@ def build_single_container(config: dict, algo_name: str, version: str, build_sta
     success = submit_and_wait_for_build(config, algo_name, version, build_state)
     if success:
         print_success(f"✓ {algo_name} ({version}) built successfully")
+        return True
     else:
-        print_info(f"✗ {algo_name} ({version}) build failed")
-    return success
+        raise Exception(f"Failed to build {algo_name} ({version})")
 
 
 @task(name="Pull All Datasets")
@@ -159,7 +159,9 @@ def augment_single_output(config: dict, algo_name: str, version: str, dataset: s
     from runner.algorithm_runner import augment_existing_output
     
     success = augment_existing_output(config, algo_name, version, dataset)
-    return success
+    if not success:
+        raise Exception(f"Failed to augment {algo_name} output for {dataset}")
+    return True
 
 
 @task(name="Augment Existing Outputs")
@@ -177,9 +179,14 @@ def augment_existing_outputs_task(config: dict, to_augment: list[tuple[str, str,
         future = augment_single_output.submit(config, algo_name, version, dataset)
         futures.append(future)
     
-    # Wait for all to complete
-    results = [future.result() for future in futures]
-    successful = sum(1 for r in results if r)
+    # Wait for all to complete and count successes
+    successful = 0
+    for future in futures:
+        try:
+            future.result()
+            successful += 1
+        except Exception:
+            pass
     
     print_info(f"Augmented {successful}/{len(to_augment)} outputs")
     return successful
@@ -207,8 +214,7 @@ def run_single_combination(
     # Pull container from Alexandria
     print_step(f"Preparing {algo_name} ({version}) for {dataset}...")
     if not pull_container_from_alexandria(config, algo_name, version):
-        print_info(f"✗ Failed to pull container for {algo_name}")
-        return False
+        raise Exception(f"Failed to pull container for {algo_name}")
     
     # Run algorithm
     print_info(f"Running {algo_name} on {dataset}...")
@@ -220,10 +226,9 @@ def run_single_combination(
     
     if success:
         print_success(f"✓ Completed {algo_name} on {dataset}")
+        return True
     else:
-        print_info(f"✗ Failed {algo_name} on {dataset}")
-    
-    return success
+        raise Exception(f"Algorithm run failed for {algo_name} on {dataset}")
 
 
 @task(name="Cleanup Workspace")
@@ -424,9 +429,14 @@ def run_algorithm_benchmarks_flow(
             futures.append(future)
             total_runs += 1
         
-        # Wait for all runs for this dataset to complete
-        results = [future.result() for future in futures]
-        dataset_successes = sum(1 for r in results if r)
+        # Wait for all runs for this dataset to complete and handle failures
+        dataset_successes = 0
+        for future in futures:
+            try:
+                future.result()
+                dataset_successes += 1
+            except Exception:
+                pass  # Task already logged the error, just count as failure
         successful_runs += dataset_successes
         
         print_info(f"Completed {dataset_successes}/{len(algo_list)} runs for {dataset_name}")
@@ -493,8 +503,13 @@ def main():
             build_futures.append(future)
         
         # Wait for all to complete and count successes
-        build_results = [future.result() for future in build_futures]
-        built_count = sum(1 for success in build_results if success)
+        built_count = 0
+        for future in build_futures:
+            try:
+                future.result()  # Will raise exception if build failed
+                built_count += 1
+            except Exception:
+                pass  # Task already logged the error, just count as failure
         print_info(f"Built {built_count}/{len(needs_building)} containers")
         
         # Re-check container status after builds complete
