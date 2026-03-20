@@ -344,6 +344,31 @@ def check_outputs_needing_augmentation(
     return get_outputs_needing_augmentation(config, existing_outputs, algorithms)
 
 
+@task(name="Scan Existing Datasets on Asimov")
+def scan_existing_datasets() -> set[str]:
+    """Scan for datasets already on Asimov and update state."""
+    dataset_manager = DatasetManager()
+    datasets_dir = Path(__file__).parent / "datasets"
+    
+    if datasets_dir.exists():
+        print_step("Scanning for existing datasets on Asimov...")
+        for dataset_dir in datasets_dir.iterdir():
+            if dataset_dir.is_dir():
+                dataset_name = dataset_dir.name
+                status = dataset_manager.get_status(dataset_name)
+                if not status:
+                    # Dataset exists on disk but not in state - mark as available
+                    print_info(f"Found existing dataset: {dataset_name}")
+                    dataset_manager.states[dataset_name] = {
+                        "status": "available",
+                        "size_bytes": 0,
+                        "updated_at": None,
+                    }
+                    dataset_manager._save()
+    
+    return set(dataset_manager.get_available_datasets())
+
+
 @flow(name="Denovo Benchmarks Orchestration", log_prints=True)
 def main():
     """Main orchestration flow."""
@@ -418,28 +443,10 @@ def main():
     # Analyze what's missing
     missing_with_container, needed_datasets = analyze_missing(config, algorithms, existing_outputs, container_status)
 
-    # Check current dataset state and update if datasets exist but aren't tracked
-    dataset_manager = DatasetManager()
-    datasets_dir = Path(__file__).parent / "datasets"
-    
-    if datasets_dir.exists():
-        print_step("Scanning for existing datasets on Asimov...")
-        for dataset_dir in datasets_dir.iterdir():
-            if dataset_dir.is_dir():
-                dataset_name = dataset_dir.name
-                status = dataset_manager.get_status(dataset_name)
-                if not status:
-                    # Dataset exists on disk but not in state - mark as available
-                    print_info(f"Found existing dataset: {dataset_name}")
-                    dataset_manager.states[dataset_name] = {
-                        "status": "available",
-                        "size_bytes": 0,
-                        "updated_at": None,
-                    }
-                    dataset_manager._save()
+    # Scan for existing datasets on Asimov
+    available_datasets = scan_existing_datasets()
 
     # Filter needed_datasets to exclude those already on Asimov
-    available_datasets = set(dataset_manager.get_available_datasets())
     needed_datasets = needed_datasets - available_datasets
     
     if needed_datasets:
