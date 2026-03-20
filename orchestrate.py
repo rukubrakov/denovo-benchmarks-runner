@@ -298,6 +298,14 @@ def check_repository(config: dict) -> None:
     check_or_clone_repo(config)
 
 
+@task(name="Discover Algorithms")
+def discover_algorithms(config: dict) -> list[dict[str, str]]:
+    """Discover and display available algorithms."""
+    algorithms = get_algorithms(config)
+    display_algorithms(algorithms)
+    return algorithms
+
+
 @flow(name="Denovo Benchmarks Orchestration", log_prints=True)
 def main():
     """Main orchestration flow."""
@@ -312,9 +320,8 @@ def main():
     # Check/clone/update repository
     check_repository(config)
 
-    # Get and display algorithms
-    algorithms = get_algorithms(config)
-    display_algorithms(algorithms)
+    # Discover and display algorithms
+    algorithms = discover_algorithms(config)
 
     # Check Alexandria outputs
     existing_outputs = check_outputs(config)
