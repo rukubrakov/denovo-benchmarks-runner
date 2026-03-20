@@ -546,26 +546,62 @@ def main():
             augmented_count = augment_existing_outputs_task(config, outputs_needing_augmentation)
             print_success(f"Augmented {augmented_count} existing outputs")
 
-    # Analyze what's missing
-    missing_with_container, needed_datasets = analyze_missing(config, algorithms, existing_outputs, container_status)
-
-    # Scan for existing datasets on Asimov
-    available_datasets = scan_existing_datasets()
-
-    # Filter needed_datasets to exclude those already on Asimov
-    needed_datasets = needed_datasets - available_datasets
-    
-    if needed_datasets:
-        print_info(f"Need to pull {len(needed_datasets)} datasets")
-    if available_datasets:
-        print_info(f"{len(available_datasets)} datasets already on Asimov: {available_datasets}")
-    # Pull needed datasets and wait for completion
-    if needed_datasets:
-        pulled_count = pull_datasets_flow(config, needed_datasets)
-        print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets")
-
-    # Run algorithms on datasets
-    run_algorithm_benchmarks_flow(config, missing_with_container, algorithms)
+    # Main processing loop: keep pulling datasets and running algorithms until all done
+    print_header("Starting Main Processing Loop")
+    iteration = 0
+    while True:
+        iteration += 1
+        print_header(f"Processing Iteration {iteration}")
+        
+        # Check current state of outputs on Alexandria
+        print_step("Checking current output status...")
+        existing_outputs = check_alexandria_outputs(config)
+        
+        # Analyze what's missing
+        missing_with_container, needed_datasets = analyze_missing(config, algorithms, existing_outputs, container_status)
+        
+        # If nothing missing, we're done!
+        if not missing_with_container:
+            print_success("All outputs completed! Pipeline finished.")
+            break
+        
+        # Scan for existing datasets on Asimov
+        available_datasets = scan_existing_datasets()
+        
+        # Filter needed_datasets to exclude those already on Asimov
+        needed_datasets = needed_datasets - available_datasets
+        
+        if needed_datasets:
+            print_info(f"Need to pull {len(needed_datasets)} datasets")
+        if available_datasets:
+            print_info(f"{len(available_datasets)} datasets already on Asimov: {available_datasets}")
+        
+        # Pull needed datasets and wait for completion
+        if needed_datasets:
+            pulled_count = pull_datasets_flow(config, needed_datasets)
+            print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets")
+            
+            # Only stop if we couldn't pull ANY datasets (real failure)
+            # If we pulled some but not all, it's likely a space issue - continue processing what we have
+            if pulled_count == 0:
+                print_info(f"Failed to pull any datasets. Ending processing loop.")
+                print_info(f"Completed iterations: {iteration}")
+                break
+            elif pulled_count < len(needed_datasets):
+                print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets (likely due to disk space limits)")
+                print_info(f"Will process these and loop back for remaining datasets")
+        
+        # Run algorithms on datasets
+        total_runs, successful_runs = run_algorithm_benchmarks_flow(config, missing_with_container, algorithms)
+        
+        # Check results - stop if any failures occurred
+        failed_runs = total_runs - successful_runs
+        if failed_runs > 0:
+            print_info(f"Algorithm run failures detected: {failed_runs}/{total_runs} runs failed. Ending processing loop.")
+            print_info(f"Completed iterations: {iteration}")
+            break
+        
+        print_success(f"Iteration {iteration} complete: All {successful_runs} runs successful!")
 
 
 if __name__ == "__main__":
