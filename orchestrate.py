@@ -298,12 +298,24 @@ def check_repository(config: dict) -> None:
     check_or_clone_repo(config)
 
 
-@task(name="Discover Algorithms")
+@task(name="Discover available algorithms")
 def discover_algorithms(config: dict) -> list[dict[str, str]]:
     """Discover and display available algorithms."""
     algorithms = get_algorithms(config)
     display_algorithms(algorithms)
     return algorithms
+
+
+@task(name="Check Alexandria Outputs")
+def check_alexandria_outputs(config: dict) -> set[tuple[str, str]]:
+    """Check existing outputs on Alexandria."""
+    return check_outputs(config)
+
+
+@task(name="Check Container Status")
+def check_container_status(config: dict, algorithms: list[dict[str, str]]) -> dict[str, bool]:
+    """Check which algorithm containers exist on Alexandria."""
+    return check_containers(config, algorithms)
 
 
 @flow(name="Denovo Benchmarks Orchestration", log_prints=True)
@@ -314,20 +326,21 @@ def main():
     # Load config
     config = load_config()
 
-    # Cleanup workspace
-    cleanup_workspace()
+    # Run independent tasks in parallel
+    cleanup_future = cleanup_workspace.submit()
+    repo_future = check_repository.submit(config)
+    outputs_future = check_alexandria_outputs.submit(config)
 
-    # Check/clone/update repository
-    check_repository(config)
+    # Wait for all parallel tasks
+    cleanup_future.result()
+    repo_future.result()
+    existing_outputs = outputs_future.result()
 
-    # Discover and display algorithms
+    # Discover algorithms
     algorithms = discover_algorithms(config)
 
-    # Check Alexandria outputs
-    existing_outputs = check_outputs(config)
-
     # Check containers
-    container_status = check_containers(config, algorithms)
+    container_status = check_container_status(config, algorithms)
 
     # Check evaluation container
     evaluation_exists = check_evaluation_container(config)
