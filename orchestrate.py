@@ -334,6 +334,16 @@ def pull_evaluation_container_task(config: dict) -> bool:
     return pull_evaluation_container(config)
 
 
+@task(name="Check Outputs Needing Augmentation")
+def check_outputs_needing_augmentation(
+    config: dict, 
+    existing_outputs: set[tuple[str, str]], 
+    algorithms: list[dict[str, str]]
+) -> list[tuple[str, str, str]]:
+    """Check which existing outputs need RT/SA augmentation."""
+    return get_outputs_needing_augmentation(config, existing_outputs, algorithms)
+
+
 @flow(name="Denovo Benchmarks Orchestration", log_prints=True)
 def main():
     """Main orchestration flow."""
@@ -400,7 +410,7 @@ def main():
 
     # Check and augment existing outputs if evaluation container is available
     if evaluation_exists:
-        outputs_needing_augmentation = get_outputs_needing_augmentation(config, existing_outputs, algorithms)
+        outputs_needing_augmentation = check_outputs_needing_augmentation(config, existing_outputs, algorithms)
         if outputs_needing_augmentation:
             augmented_count = augment_existing_outputs_task(config, outputs_needing_augmentation)
             print_success(f"Augmented {augmented_count} existing outputs")
