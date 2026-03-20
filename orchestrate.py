@@ -122,37 +122,6 @@ def build_single_container(config: dict, algo_name: str, version: str, build_sta
         raise Exception(f"Failed to build {algo_name} ({version})")
 
 
-@task(name="Pull All Datasets")
-def pull_datasets_task(config: dict, needed_datasets: set[str]) -> int:
-    """Pull needed datasets sequentially (to avoid space conflicts)."""
-    if not needed_datasets:
-        return 0
-    
-    print_header("Pulling Datasets (Sequential)")
-    print_info(f"Pulling {len(needed_datasets)} datasets one at a time...")
-    
-    dataset_manager = DatasetManager()
-    successful = 0
-    
-    # Pull sequentially to avoid space/state conflicts
-    for dataset_name in needed_datasets:
-        # Check if already available
-        status = dataset_manager.get_status(dataset_name)
-        if status and status["status"] == "available":
-            print_success(f"✓ {dataset_name} already available")
-            successful += 1
-            continue
-        
-        print_info(f"Pulling {dataset_name}...")
-        if submit_and_wait_for_pull(config, dataset_name, dataset_manager):
-            successful += 1
-            print_success(f"✓ {dataset_name} pulled successfully")
-        else:
-            print_info(f"✗ {dataset_name} pull failed")
-    
-    return successful
-
-
 @task(task_run_name="Augment {algo_name} + {dataset}")
 def augment_single_output(config: dict, algo_name: str, version: str, dataset: str) -> bool:
     """Augment a single existing output with RT and SA predictions."""
@@ -374,6 +343,52 @@ def scan_existing_datasets() -> set[str]:
     return set(dataset_manager.get_available_datasets())
 
 
+@task(task_run_name="Pull Dataset: {dataset_name}")
+def pull_single_dataset_task(config: dict, dataset_name: str) -> bool:
+    """Pull a single dataset from Alexandria to Asimov."""
+    dataset_manager = DatasetManager()
+    
+    # Check if already available
+    status = dataset_manager.get_status(dataset_name)
+    if status and status["status"] == "available":
+        print_success(f"✓ {dataset_name} already available")
+        return True
+    
+    print_info(f"Pulling {dataset_name}...")
+    if submit_and_wait_for_pull(config, dataset_name, dataset_manager):
+        print_success(f"✓ {dataset_name} pulled successfully")
+        return True
+    else:
+        print_info(f"✗ {dataset_name} pull failed")
+        return False
+
+
+@flow(name="Pull Datasets", log_prints=True)
+def pull_datasets_flow(config: dict, needed_datasets: set[str]) -> int:
+    """Subflow: Pull needed datasets sequentially to avoid space conflicts."""
+    if not needed_datasets:
+        return 0
+    
+    print_header("Pulling Datasets (Sequential)")
+    print_info(f"Pulling {len(needed_datasets)} datasets one at a time...")
+    
+    successful = 0
+    # Pull sequentially to avoid space/state conflicts
+    for dataset_name in needed_datasets:
+        if pull_single_dataset_task(config, dataset_name):
+            successful += 1
+    
+    return successful
+
+
+@task(task_run_name="Cleanup Dataset: {dataset_name}")
+def cleanup_dataset_task(dataset_name: str) -> None:
+    """Clean up a dataset from Asimov after successful processing."""
+    dataset_manager = DatasetManager()
+    print_step(f"All algorithms succeeded - cleaning up dataset {dataset_name}...")
+    dataset_manager.cleanup_dataset(dataset_name)
+
+
 @flow(name="Run Algorithm Benchmarks", log_prints=True)
 def run_algorithm_benchmarks_flow(
     config: dict,
@@ -443,8 +458,7 @@ def run_algorithm_benchmarks_flow(
         
         # Only clean up dataset if ALL algorithms succeeded
         if dataset_successes == len(algo_list):
-            print_step(f"All algorithms succeeded - cleaning up dataset {dataset_name}...")
-            dataset_manager.cleanup_dataset(dataset_name)
+            cleanup_dataset_task(dataset_name)
         else:
             print_info(f"Some algorithms failed - keeping dataset {dataset_name} for retry")
     
@@ -547,7 +561,7 @@ def main():
         print_info(f"{len(available_datasets)} datasets already on Asimov: {available_datasets}")
     # Pull needed datasets and wait for completion
     if needed_datasets:
-        pulled_count = pull_datasets_task(config, needed_datasets)
+        pulled_count = pull_datasets_flow(config, needed_datasets)
         print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets")
 
     # Run algorithms on datasets
