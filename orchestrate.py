@@ -73,7 +73,6 @@ def analyze_missing(
     print_info(f"Total possible combinations: {len(all_combinations)}")
     print_info(f"Existing outputs: {len(existing_outputs)}")
     print_info(f"Missing outputs: {len(missing)}")
-    print()
 
     # Group by container status
     missing_with_container = []
@@ -89,13 +88,11 @@ def analyze_missing(
         print_step("Ready to run (container exists):")
         for algo, dataset in missing_with_container:
             print(f"    ✓ {algo} + {dataset}")
-        print()
 
     if missing_without_container:
         print_step("Need container first (container missing):")
         for algo, dataset in missing_without_container:
             print(f"    ⚠ {algo} + {dataset}")
-        print()
 
     # Extract needed datasets (only for missing combinations)
     needed_datasets = set(dataset for _, dataset in missing)
@@ -109,7 +106,6 @@ def analyze_missing(
     print(f"  • Missing: {len(missing)}")
     print(f"    - Ready to run: {len(missing_with_container)}")
     print(f"    - Need container: {len(missing_without_container)}")
-    print()
 
     return missing_with_container, needed_datasets
 
@@ -153,7 +149,6 @@ def pull_datasets_task(config: dict, needed_datasets: set[str]) -> int:
             print_success(f"✓ {dataset_name} pulled successfully")
         else:
             print_info(f"✗ {dataset_name} pull failed")
-        print()
     
     return successful
 
@@ -288,11 +283,9 @@ def cleanup_workspace() -> None:
             print_success("✓ Augmentation work cleaned")
         else:
             print_info("✓ No augmentation work to clean")
-    
-    print()
 
 
-@task(name="Check Repository")
+@task(name="Ensure denovo-benchmarks Repository")
 def check_repository(config: dict) -> None:
     """Check, clone, or update the benchmarks repository."""
     check_or_clone_repo(config)
@@ -312,10 +305,33 @@ def check_alexandria_outputs(config: dict) -> set[tuple[str, str]]:
     return check_outputs(config)
 
 
-@task(name="Check Container Status")
+@task(name="Check Containers existance on Alexandria")
 def check_container_status(config: dict, algorithms: list[dict[str, str]]) -> dict[str, bool]:
     """Check which algorithm containers exist on Alexandria."""
     return check_containers(config, algorithms)
+
+
+@task(name="Check Evaluation Container on Alexandria")
+def check_evaluation_container_task(config: dict) -> bool:
+    """Check if evaluation container exists on Alexandria."""
+    return check_evaluation_container(config)
+
+
+@task(name="Analyze Container Build Status")
+def analyze_container_builds(
+    config: dict, 
+    algorithms: list[dict[str, str]], 
+    container_status: dict[str, bool]
+) -> tuple[list[tuple[str, str]], BuildState]:
+    """Analyze which containers need building and return build queue."""
+    return check_and_display_builds(config, algorithms, container_status)
+
+
+@task(name="Pull Evaluation Container")
+def pull_evaluation_container_task(config: dict) -> bool:
+    """Pull evaluation container from Alexandria to Asimov."""
+    from runner.algorithm_runner import pull_evaluation_container
+    return pull_evaluation_container(config)
 
 
 @flow(name="Denovo Benchmarks Orchestration", log_prints=True)
@@ -343,10 +359,10 @@ def main():
     container_status = check_container_status(config, algorithms)
 
     # Check evaluation container
-    evaluation_exists = check_evaluation_container(config)
+    evaluation_exists = check_evaluation_container_task(config)
 
     # Check and manage container builds
-    needs_building, build_state = check_and_display_builds(config, algorithms, container_status)
+    needs_building, build_state = analyze_container_builds(config, algorithms, container_status)
 
     # Add evaluation container to builds if needed
     if not evaluation_exists:
@@ -372,18 +388,15 @@ def main():
         # Re-check container status after builds complete
         print_step("Rechecking container status...")
         container_status = check_containers(config, algorithms)
-        evaluation_exists = check_evaluation_container(config)
-        print()
+        evaluation_exists = check_evaluation_container_task(config)
+
 
     # Pull evaluation container if it exists on Alexandria
     if evaluation_exists:
-        print_header("Pulling Evaluation Container")
-        from runner.algorithm_runner import pull_evaluation_container
-        pull_success = pull_evaluation_container(config)
+        pull_success = pull_evaluation_container_task(config)
         if not pull_success:
-            print_info("⚠ Failed to pull evaluation container - augmentation will be skipped")
+            print_info("⚠ Failed to pull evaluation container -augmentation will be skipped")
             evaluation_exists = False  # Mark as unavailable
-        print()
 
     # Check and augment existing outputs if evaluation container is available
     if evaluation_exists:
@@ -391,7 +404,6 @@ def main():
         if outputs_needing_augmentation:
             augmented_count = augment_existing_outputs_task(config, outputs_needing_augmentation)
             print_success(f"Augmented {augmented_count} existing outputs")
-        print()
 
     # Analyze what's missing
     missing_with_container, needed_datasets = analyze_missing(config, algorithms, existing_outputs, container_status)
@@ -415,7 +427,6 @@ def main():
                         "updated_at": None,
                     }
                     dataset_manager._save()
-        print()
 
     # Filter needed_datasets to exclude those already on Asimov
     available_datasets = set(dataset_manager.get_available_datasets())
@@ -425,13 +436,10 @@ def main():
         print_info(f"Need to pull {len(needed_datasets)} datasets")
     if available_datasets:
         print_info(f"{len(available_datasets)} datasets already on Asimov: {available_datasets}")
-    print()
-
     # Pull needed datasets and wait for completion
     if needed_datasets:
         pulled_count = pull_datasets_task(config, needed_datasets)
         print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets")
-        print()
 
     # Run algorithms on datasets
     if missing_with_container:
@@ -451,12 +459,10 @@ def main():
             print_info("No runnable combinations (datasets not available on Asimov)")
             print_info(f"Available datasets: {available_datasets}")
             print_info(f"Needed datasets: {set(d for _, d in missing_with_container)}")
-            print()
             return
         
         print_info(f"Processing {len(runnable_combinations)} algorithm-dataset combinations")
         print_info(f"Available datasets on Asimov: {available_datasets}")
-        print()
         
         # Group by dataset to process one dataset at a time
         from collections import defaultdict
@@ -474,7 +480,6 @@ def main():
         for dataset_name, algo_list in by_dataset.items():
             print_header(f"Processing Dataset: {dataset_name}")
             print_info(f"Running {len(algo_list)} algorithms on {dataset_name}")
-            print()
             
             # Run all algorithms for this dataset in parallel
             futures = []
@@ -496,14 +501,11 @@ def main():
                 dataset_manager.cleanup_dataset(dataset_name)
             else:
                 print_info(f"Some algorithms failed - keeping dataset {dataset_name} for retry")
-            print()
         
         print_header("Algorithm Runs Summary")
         print_info(f"Total runs: {total_runs}")
         print_info(f"Successful: {successful_runs}")
         print_info(f"Failed: {total_runs - successful_runs}")
-
-    print()
 
 
 if __name__ == "__main__":
