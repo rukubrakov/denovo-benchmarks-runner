@@ -369,6 +369,83 @@ def scan_existing_datasets() -> set[str]:
     return set(dataset_manager.get_available_datasets())
 
 
+@flow(name="Run Algorithm Benchmarks", log_prints=True)
+def run_algorithm_benchmarks_flow(
+    config: dict,
+    missing_with_container: list[tuple[str, str]],
+    algorithms: list[dict[str, str]]
+) -> tuple[int, int]:
+    """Subflow: Run all algorithm-dataset combinations and return (total, successful) counts."""
+    if not missing_with_container:
+        return 0, 0
+    
+    print_header("Running Algorithms on Datasets")
+    
+    # Check which datasets are actually available
+    dataset_manager = DatasetManager()
+    available_datasets = set(dataset_manager.get_available_datasets())
+    
+    # Filter to only combinations where dataset is available
+    runnable_combinations = [
+        (algo, dataset) for algo, dataset in missing_with_container
+        if dataset in available_datasets
+    ]
+    
+    if not runnable_combinations:
+        print_info("No runnable combinations (datasets not available on Asimov)")
+        print_info(f"Available datasets: {available_datasets}")
+        print_info(f"Needed datasets: {set(d for _, d in missing_with_container)}")
+        return 0, 0
+    
+    print_info(f"Processing {len(runnable_combinations)} algorithm-dataset combinations")
+    print_info(f"Available datasets on Asimov: {available_datasets}")
+    
+    # Group by dataset to process one dataset at a time
+    from collections import defaultdict
+    by_dataset = defaultdict(list)
+    for algo_name, dataset in runnable_combinations:
+        # Get version for this algorithm
+        algo = next((a for a in algorithms if a["name"] == algo_name), None)
+        if algo:
+            by_dataset[dataset].append((algo_name, algo["version"]))
+    
+    # Process each dataset's algorithms, then clean up dataset
+    total_runs = 0
+    successful_runs = 0
+    
+    for dataset_name, algo_list in by_dataset.items():
+        print_header(f"Processing Dataset: {dataset_name}")
+        print_info(f"Running {len(algo_list)} algorithms on {dataset_name}")
+        
+        # Run all algorithms for this dataset in parallel
+        futures = []
+        for algo_name, version in algo_list:
+            future = run_single_combination.submit(config, algo_name, version, dataset_name)
+            futures.append(future)
+            total_runs += 1
+        
+        # Wait for all runs for this dataset to complete
+        results = [future.result() for future in futures]
+        dataset_successes = sum(1 for r in results if r)
+        successful_runs += dataset_successes
+        
+        print_info(f"Completed {dataset_successes}/{len(algo_list)} runs for {dataset_name}")
+        
+        # Only clean up dataset if ALL algorithms succeeded
+        if dataset_successes == len(algo_list):
+            print_step(f"All algorithms succeeded - cleaning up dataset {dataset_name}...")
+            dataset_manager.cleanup_dataset(dataset_name)
+        else:
+            print_info(f"Some algorithms failed - keeping dataset {dataset_name} for retry")
+    
+    print_header("Algorithm Runs Summary")
+    print_info(f"Total runs: {total_runs}")
+    print_info(f"Successful: {successful_runs}")
+    print_info(f"Failed: {total_runs - successful_runs}")
+    
+    return total_runs, successful_runs
+
+
 @flow(name="Denovo Benchmarks Orchestration", log_prints=True)
 def main():
     """Main orchestration flow."""
@@ -459,70 +536,7 @@ def main():
         print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets")
 
     # Run algorithms on datasets
-    if missing_with_container:
-        print_header("Running Algorithms on Datasets")
-        
-        # Check which datasets are actually available
-        dataset_manager = DatasetManager()
-        available_datasets = set(dataset_manager.get_available_datasets())
-        
-        # Filter to only combinations where dataset is available
-        runnable_combinations = [
-            (algo, dataset) for algo, dataset in missing_with_container
-            if dataset in available_datasets
-        ]
-        
-        if not runnable_combinations:
-            print_info("No runnable combinations (datasets not available on Asimov)")
-            print_info(f"Available datasets: {available_datasets}")
-            print_info(f"Needed datasets: {set(d for _, d in missing_with_container)}")
-            return
-        
-        print_info(f"Processing {len(runnable_combinations)} algorithm-dataset combinations")
-        print_info(f"Available datasets on Asimov: {available_datasets}")
-        
-        # Group by dataset to process one dataset at a time
-        from collections import defaultdict
-        by_dataset = defaultdict(list)
-        for algo_name, dataset in runnable_combinations:
-            # Get version for this algorithm
-            algo = next((a for a in algorithms if a["name"] == algo_name), None)
-            if algo:
-                by_dataset[dataset].append((algo_name, algo["version"]))
-        
-        # Process each dataset's algorithms, then clean up dataset
-        total_runs = 0
-        successful_runs = 0
-        
-        for dataset_name, algo_list in by_dataset.items():
-            print_header(f"Processing Dataset: {dataset_name}")
-            print_info(f"Running {len(algo_list)} algorithms on {dataset_name}")
-            
-            # Run all algorithms for this dataset in parallel
-            futures = []
-            for algo_name, version in algo_list:
-                future = run_single_combination.submit(config, algo_name, version, dataset_name)
-                futures.append(future)
-                total_runs += 1
-            
-            # Wait for all runs for this dataset to complete
-            results = [future.result() for future in futures]
-            dataset_successes = sum(1 for r in results if r)
-            successful_runs += dataset_successes
-            
-            print_info(f"Completed {dataset_successes}/{len(algo_list)} runs for {dataset_name}")
-            
-            # Only clean up dataset if ALL algorithms succeeded
-            if dataset_successes == len(algo_list):
-                print_step(f"All algorithms succeeded - cleaning up dataset {dataset_name}...")
-                dataset_manager.cleanup_dataset(dataset_name)
-            else:
-                print_info(f"Some algorithms failed - keeping dataset {dataset_name} for retry")
-        
-        print_header("Algorithm Runs Summary")
-        print_info(f"Total runs: {total_runs}")
-        print_info(f"Successful: {successful_runs}")
-        print_info(f"Failed: {total_runs - successful_runs}")
+    run_algorithm_benchmarks_flow(config, missing_with_container, algorithms)
 
 
 if __name__ == "__main__":
