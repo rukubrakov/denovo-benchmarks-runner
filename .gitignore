@@ -33,3 +33,4 @@ dataset_state.json
 overlays/
 containers/
 outputs/
+.venv-dev

@@ -1,5 +1,8 @@
 # Denovo Benchmarks Orchestration System
 
+[![Tests](https://github.com/rukubrakov/denovo-benchmarks-runner/actions/workflows/tests.yml/badge.svg)](https://github.com/rukubrakov/denovo-benchmarks-runner/actions/workflows/tests.yml)
+[![Code Quality](https://github.com/rukubrakov/denovo-benchmarks-runner/actions/workflows/lint.yml/badge.svg)](https://github.com/rukubrakov/denovo-benchmarks-runner/actions/workflows/lint.yml)
+
 Prefect-powered orchestration for running de novo peptide sequencing benchmarks on HPC with Slurm.
 
 ## Installation
@@ -27,8 +30,11 @@ cd denovo-benchmarks-runner
 # Install dependencies (creates .venv and installs packages)
 uv sync
 
-# Install dev dependencies (includes ruff for linting/formatting)
+# Install dev dependencies (includes ruff, pytest)
 uv sync --all-extras
+
+# Install pre-commit hooks (run once after clone)
+pre-commit install
 
 # Configure your setup
 nano config.yaml  # Edit paths and settings
@@ -45,6 +51,38 @@ uv run ruff check .
 
 # Fix linting issues automatically
 uv run ruff check --fix .
+```
+
+### Testing
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run unit tests only
+uv run pytest tests/unit/ -v
+
+# Run integration tests only
+uv run pytest tests/integration/ -v
+
+# Run with coverage report
+uv run pytest --cov=runner --cov-report=term-missing
+```
+
+Test layout:
+- `tests/unit/` — pure unit tests (no Slurm, no SSH)
+- `tests/integration/` — integration tests (require cluster access)
+
+### Pre-commit Hooks
+
+Hooks run automatically on `git commit`: ruff lint + format, unit tests, and basic file checks.
+
+```bash
+# Install hooks (once)
+pre-commit install
+
+# Run manually on all files
+pre-commit run --all-files
 ```
 
 ## Quick Start
@@ -141,26 +179,40 @@ uv run orchestrate.py
 
 ```
 denovo-benchmarks-runner/
-├── README.md                 # This file
-├── config.yaml              # Configuration
-├── pyproject.toml           # Python project definition
-├── orchestrate.py           # Main workflow (run this!)
-├── deploy.py                # Prefect deployment (optional, for UI triggers)
-├── runner/                  # Python package
+├── README.md                    # This file
+├── config.yaml                  # Configuration
+├── pyproject.toml               # Python project definition
+├── .pre-commit-config.yaml      # Pre-commit hooks (ruff, pytest, file checks)
+├── .github/
+│   └── workflows/
+│       ├── tests.yml            # CI: run unit + integration tests
+│       └── lint.yml             # CI: ruff lint + format check
+├── orchestrate.py               # Main workflow (run this!)
+├── deploy.py                    # Prefect deployment (optional, for UI triggers)
+├── runner/                      # Python package
 │   ├── __init__.py
-│   ├── display.py           # Display/UI utilities
-│   ├── git_ops.py           # Git operations
-│   ├── alexandria.py        # Alexandria storage operations
-│   ├── algorithms.py        # Algorithm discovery
-│   ├── build_state.py       # Container build state tracking
-│   └── container_builder.py # Container building orchestration
-├── container_overrides/     # Optional container.def overrides
+│   ├── display.py               # Display/UI utilities
+│   ├── git_ops.py               # Git operations
+│   ├── alexandria.py            # Alexandria storage operations
+│   ├── algorithms.py            # Algorithm discovery
+│   ├── build_state.py           # Container build state tracking
+│   ├── container_builder.py     # Container building orchestration
+│   ├── algorithm_runner.py      # Algorithm run + augment + evaluate jobs
+│   └── job_waiter.py            # Slurm job polling
+├── templates/                   # Slurm job script templates
+│   ├── build_container.slurm.sh
+│   ├── run_algorithm.slurm.sh
+│   ├── augment_output.slurm.sh
+│   ├── evaluate_dataset.slurm.sh
+│   └── pull_dataset.slurm.sh
+├── tests/
+│   ├── unit/                    # Unit tests (no Slurm/SSH required)
+│   └── integration/             # Integration tests (require cluster access)
+├── container_overrides/         # Optional container.def overrides
 │   └── algorithm_name/
 │       └── version/
 │           └── container.def
-├── templates/
-│   └── build_container.slurm.sh  # Container build job template
-└── build_state.json         # Auto-generated build tracking
+└── build_state.json             # Auto-generated build tracking
 ```
 
 **Key Files:**
@@ -182,7 +234,7 @@ alexandria:
   host: "nkubrakov@alexandria.uantwerpen.be"
   outputs_path: "/mnt/data/nkubrakov/denovo_benchmarks/outputs"
   containers_path: "/mnt/data/nkubrakov/denovo_benchmarks/containers"
-  
+
 datasets:
   - "test_dataset_human"  # Add more datasets as needed
 
