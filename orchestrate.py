@@ -12,14 +12,14 @@ from prefect import flow, task
 
 from runner import (
     BuildState,
+    DatasetManager,
     check_and_display_builds,
     check_containers,
     check_evaluation_container,
     check_or_clone_repo,
-    check_outputs,
     check_output_exists_on_alexandria,
+    check_outputs,
     cleanup_local_container,
-    DatasetManager,
     display_algorithms,
     get_algorithms,
     get_outputs_needing_augmentation,
@@ -118,11 +118,14 @@ def read_error_log(log_pattern: str, lines: int = 20) -> str:
         return ""
     with open(error_logs[0], "r") as f:
         all_lines = f.readlines()
-        excerpt = ''.join(all_lines[-lines:])
+        excerpt = "".join(all_lines[-lines:])
         return excerpt
 
+
 @task(task_run_name="Build Container: {algo_name}")
-def build_single_container(config: dict, algo_name: str, version: str, build_state: BuildState) -> bool:
+def build_single_container(
+    config: dict, algo_name: str, version: str, build_state: BuildState
+) -> bool:
     """Build a single container and wait for completion."""
     print_info(f"Building {algo_name} ({version})...")
     success, job_id = submit_and_wait_for_build(config, algo_name, version, build_state)
@@ -143,7 +146,7 @@ def build_single_container(config: dict, algo_name: str, version: str, build_sta
 def augment_single_output(config: dict, algo_name: str, version: str, dataset: str) -> bool:
     """Augment a single existing output with RT and SA predictions."""
     from runner.algorithm_runner import augment_existing_output
-    
+
     success = augment_existing_output(config, algo_name, version, dataset)
     if not success:
         raise Exception(f"Failed to augment {algo_name} output for {dataset}")
@@ -155,16 +158,16 @@ def augment_existing_outputs_task(config: dict, to_augment: list[tuple[str, str,
     """Augment existing outputs that lack SA/pred_RT columns (parallel)."""
     if not to_augment:
         return 0
-    
+
     print_header("Augmenting Existing Outputs (Parallel)")
     print_info(f"Augmenting {len(to_augment)} existing output(s)...")
-    
+
     # Submit all augmentations in parallel
     futures = []
     for algo_name, version, dataset in to_augment:
         future = augment_single_output.submit(config, algo_name, version, dataset)
         futures.append(future)
-    
+
     # Wait for all to complete and count successes
     successful = 0
     for future in futures:
@@ -173,43 +176,41 @@ def augment_existing_outputs_task(config: dict, to_augment: list[tuple[str, str,
             successful += 1
         except Exception:
             pass
-    
+
     print_info(f"Augmented {successful}/{len(to_augment)} outputs")
     return successful
 
 
 @task(task_run_name="Run {algo_name} on {dataset}")
-def run_single_combination(
-    config: dict, algo_name: str, version: str, dataset: str
-) -> bool:
+def run_single_combination(config: dict, algo_name: str, version: str, dataset: str) -> bool:
     """Run a single algorithm-dataset combination."""
-    
+
     # Check if output already exists
     if check_output_exists_on_alexandria(config, algo_name, version, dataset):
         print_success(f"✓ Output already exists for {algo_name} on {dataset}")
         return True
-    
+
     # Check if dataset is available on Asimov
     dataset_manager = DatasetManager()
     dataset_status = dataset_manager.get_status(dataset)
-    
+
     if not dataset_status or dataset_status["status"] != "available":
         print_info(f"⚠ Dataset {dataset} not available on Asimov, skipping {algo_name}")
         return False
-    
+
     # Pull container from Alexandria
     print_step(f"Preparing {algo_name} ({version}) for {dataset}...")
     if not pull_container_from_alexandria(config, algo_name, version):
         raise Exception(f"Failed to pull container for {algo_name}")
-    
+
     # Run algorithm
     print_info(f"Running {algo_name} on {dataset}...")
     success, job_id = submit_and_wait_for_run(config, algo_name, version, dataset)
-    
+
     # Cleanup container to save space
     print_step(f"Cleaning up container for {algo_name}...")
     cleanup_local_container(algo_name, version)
-    
+
     if success:
         print_success(f"✓ Completed {algo_name} on {dataset}")
         return True
@@ -228,8 +229,9 @@ def cleanup_workspace() -> None:
     """Clean up all old files before starting the pipeline."""
     print_header("Cleanup Before Starting")
     import shutil
+
     runner_dir = Path(__file__).parent
-    
+
     # Remove all old logs
     logs_dir = runner_dir / "logs"
     if logs_dir.exists():
@@ -243,7 +245,7 @@ def cleanup_workspace() -> None:
             print_success("✓ Logs cleaned")
         else:
             print_info("✓ No old logs to clean")
-    
+
     # Remove all old slurm job scripts
     slurm_jobs_dir = runner_dir / "slurm_jobs"
     if slurm_jobs_dir.exists():
@@ -255,7 +257,7 @@ def cleanup_workspace() -> None:
             print_success("✓ Slurm jobs cleaned")
         else:
             print_info("✓ No old slurm jobs to clean")
-    
+
     # Remove all orphaned outputs on Asimov
     outputs_dir = runner_dir / "denovo_benchmarks" / "outputs"
     if outputs_dir.exists():
@@ -268,7 +270,7 @@ def cleanup_workspace() -> None:
             print_success("✓ Orphaned outputs cleaned")
         else:
             print_info("✓ No orphaned outputs to clean")
-    
+
     # Remove old augmentation work directories
     augment_work_dir = runner_dir / "augment_work"
     if augment_work_dir.exists():
@@ -316,9 +318,7 @@ def check_evaluation_container_task(config: dict) -> bool:
 
 @task(name="Analyze Container Build Status")
 def analyze_container_builds(
-    config: dict, 
-    algorithms: list[dict[str, str]], 
-    container_status: dict[str, bool]
+    config: dict, algorithms: list[dict[str, str]], container_status: dict[str, bool]
 ) -> tuple[list[tuple[str, str]], BuildState]:
     """Analyze which containers need building and return build queue."""
     return check_and_display_builds(config, algorithms, container_status)
@@ -328,14 +328,13 @@ def analyze_container_builds(
 def pull_evaluation_container_task(config: dict) -> bool:
     """Pull evaluation container from Alexandria to Asimov."""
     from runner.algorithm_runner import pull_evaluation_container
+
     return pull_evaluation_container(config)
 
 
 @task(name="Check Outputs Needing Augmentation")
 def check_outputs_needing_augmentation(
-    config: dict, 
-    existing_outputs: set[tuple[str, str]], 
-    algorithms: list[dict[str, str]]
+    config: dict, existing_outputs: set[tuple[str, str]], algorithms: list[dict[str, str]]
 ) -> list[tuple[str, str, str]]:
     """Check which existing outputs need RT/SA augmentation."""
     return get_outputs_needing_augmentation(config, existing_outputs, algorithms)
@@ -346,7 +345,7 @@ def scan_existing_datasets() -> set[str]:
     """Scan for datasets already on Asimov and update state."""
     dataset_manager = DatasetManager()
     datasets_dir = Path(__file__).parent / "datasets"
-    
+
     if datasets_dir.exists():
         print_step("Scanning for existing datasets on Asimov...")
         for dataset_dir in datasets_dir.iterdir():
@@ -362,7 +361,7 @@ def scan_existing_datasets() -> set[str]:
                         "updated_at": None,
                     }
                     dataset_manager._save()
-    
+
     return set(dataset_manager.get_available_datasets())
 
 
@@ -370,13 +369,13 @@ def scan_existing_datasets() -> set[str]:
 def pull_single_dataset_task(config: dict, dataset_name: str) -> bool:
     """Pull a single dataset from Alexandria to Asimov."""
     dataset_manager = DatasetManager()
-    
+
     # Check if already available
     status = dataset_manager.get_status(dataset_name)
     if status and status["status"] == "available":
         print_success(f"✓ {dataset_name} already available")
         return True
-    
+
     print_info(f"Pulling {dataset_name}...")
     if submit_and_wait_for_pull(config, dataset_name, dataset_manager):
         print_success(f"✓ {dataset_name} pulled successfully")
@@ -391,16 +390,16 @@ def pull_datasets_flow(config: dict, needed_datasets: set[str]) -> int:
     """Subflow: Pull needed datasets sequentially to avoid space conflicts."""
     if not needed_datasets:
         return 0
-    
+
     print_header("Pulling Datasets (Sequential)")
     print_info(f"Pulling {len(needed_datasets)} datasets one at a time...")
-    
+
     successful = 0
     # Pull sequentially to avoid space/state conflicts
     for dataset_name in needed_datasets:
         if pull_single_dataset_task(config, dataset_name):
             successful += 1
-    
+
     return successful
 
 
@@ -455,22 +454,21 @@ def find_datasets_needing_evaluation(
 
     datasets_to_evaluate = []
     for dataset_name in datasets:
-        has_all_outputs = all((algo_name, dataset_name) in existing_outputs for algo_name in algo_names)
+        has_all_outputs = all(
+            (algo_name, dataset_name) in existing_outputs for algo_name in algo_names
+        )
         if not has_all_outputs:
             continue
 
         dataset_results_dir = results_dir / dataset_name
         has_all_result_files = all(
-            (dataset_results_dir / file_name).exists()
-            for file_name in expected_result_files
+            (dataset_results_dir / file_name).exists() for file_name in expected_result_files
         )
         if not has_all_result_files:
             datasets_to_evaluate.append(dataset_name)
 
     if datasets_to_evaluate:
-        print_info(
-            f"Datasets with complete outputs but missing results: {datasets_to_evaluate}"
-        )
+        print_info(f"Datasets with complete outputs but missing results: {datasets_to_evaluate}")
     else:
         print_info("All complete datasets already have evaluation results")
 
@@ -500,59 +498,57 @@ def evaluate_datasets_flow(config: dict, datasets_to_evaluate: list[str]) -> tup
 
 @flow(name="Run Algorithm Benchmarks", log_prints=True)
 def run_algorithm_benchmarks_flow(
-    config: dict,
-    missing_with_container: list[tuple[str, str]],
-    algorithms: list[dict[str, str]]
+    config: dict, missing_with_container: list[tuple[str, str]], algorithms: list[dict[str, str]]
 ) -> tuple[int, int]:
     """Subflow: Run all algorithm-dataset combinations and return (total, successful) counts."""
     if not missing_with_container:
         return 0, 0
-    
+
     print_header("Running Algorithms on Datasets")
-    
+
     # Check which datasets are actually available
     dataset_manager = DatasetManager()
     available_datasets = set(dataset_manager.get_available_datasets())
-    
+
     # Filter to only combinations where dataset is available
     runnable_combinations = [
-        (algo, dataset) for algo, dataset in missing_with_container
-        if dataset in available_datasets
+        (algo, dataset) for algo, dataset in missing_with_container if dataset in available_datasets
     ]
-    
+
     if not runnable_combinations:
         print_info("No runnable combinations (datasets not available on Asimov)")
         print_info(f"Available datasets: {available_datasets}")
         print_info(f"Needed datasets: {set(d for _, d in missing_with_container)}")
         return 0, 0
-    
+
     print_info(f"Processing {len(runnable_combinations)} algorithm-dataset combinations")
     print_info(f"Available datasets on Asimov: {available_datasets}")
-    
+
     # Group by dataset to process one dataset at a time
     from collections import defaultdict
+
     by_dataset = defaultdict(list)
     for algo_name, dataset in runnable_combinations:
         # Get version for this algorithm
         algo = next((a for a in algorithms if a["name"] == algo_name), None)
         if algo:
             by_dataset[dataset].append((algo_name, algo["version"]))
-    
+
     # Process each dataset's algorithms, then clean up dataset
     total_runs = 0
     successful_runs = 0
-    
+
     for dataset_name, algo_list in by_dataset.items():
         print_header(f"Processing Dataset: {dataset_name}")
         print_info(f"Running {len(algo_list)} algorithms on {dataset_name}")
-        
+
         # Run all algorithms for this dataset in parallel
         futures = []
         for algo_name, version in algo_list:
             future = run_single_combination.submit(config, algo_name, version, dataset_name)
             futures.append(future)
             total_runs += 1
-        
+
         # Wait for all runs for this dataset to complete and handle failures
         dataset_successes = 0
         for future in futures:
@@ -562,9 +558,9 @@ def run_algorithm_benchmarks_flow(
             except Exception:
                 pass  # Task already logged the error, just count as failure
         successful_runs += dataset_successes
-        
+
         print_info(f"Completed {dataset_successes}/{len(algo_list)} runs for {dataset_name}")
-        
+
         # Only evaluate and clean up dataset if ALL algorithms succeeded
         if dataset_successes == len(algo_list):
             # Run evaluation for this dataset
@@ -575,17 +571,17 @@ def run_algorithm_benchmarks_flow(
             except Exception as e:
                 print_info(f"⚠ Evaluation failed for {dataset_name}, but continuing...")
                 print_info(f"Error: {str(e)}")
-            
+
             # Clean up dataset
             cleanup_dataset_task(dataset_name)
         else:
             print_info(f"Some algorithms failed - keeping dataset {dataset_name} for retry")
-    
+
     print_header("Algorithm Runs Summary")
     print_info(f"Total runs: {total_runs}")
     print_info(f"Successful: {successful_runs}")
     print_info(f"Failed: {total_runs - successful_runs}")
-    
+
     return total_runs, successful_runs
 
 
@@ -628,13 +624,13 @@ def main():
     if needs_building:
         print_header("Building Algorithm Containers (Parallel)")
         print_info(f"Submitting {len(needs_building)} build jobs in parallel...")
-        
+
         # Submit all builds in parallel directly from flow
         build_futures = []
         for algo_name, version in needs_building:
             future = build_single_container.submit(config, algo_name, version, build_state)
             build_futures.append(future)
-        
+
         # Wait for all to complete and count successes
         built_count = 0
         for future in build_futures:
@@ -644,12 +640,11 @@ def main():
             except Exception:
                 pass  # Task already logged the error, just count as failure
         print_info(f"Built {built_count}/{len(needs_building)} containers")
-        
+
         # Re-check container status after builds complete
         print_step("Rechecking container status...")
         container_status = check_containers(config, algorithms)
         evaluation_exists = check_evaluation_container_task(config)
-
 
     # Pull evaluation container if it exists on Alexandria
     if evaluation_exists:
@@ -660,16 +655,20 @@ def main():
 
     # Check and augment existing outputs if evaluation container is available
     if evaluation_exists:
-        outputs_needing_augmentation = check_outputs_needing_augmentation(config, existing_outputs, algorithms)
+        outputs_needing_augmentation = check_outputs_needing_augmentation(
+            config, existing_outputs, algorithms
+        )
         if outputs_needing_augmentation:
             augmented_count = augment_existing_outputs_task(config, outputs_needing_augmentation)
             print_success(f"Augmented {augmented_count} existing outputs")
 
-        datasets_to_evaluate = find_datasets_needing_evaluation(config, algorithms, existing_outputs)
+        datasets_to_evaluate = find_datasets_needing_evaluation(
+            config, algorithms, existing_outputs
+        )
         total_eval, successful_eval = evaluate_datasets_flow(config, datasets_to_evaluate)
         if total_eval > 0:
             print_info(
-                f"Initial evaluation pass complete: {successful_eval}/{total_eval} dataset(s) successful"
+                f"Initial evaluation pass complete: {successful_eval}/{total_eval} successful"
             )
 
     # Main processing loop: keep pulling datasets and running algorithms until all done
@@ -678,55 +677,65 @@ def main():
     while True:
         iteration += 1
         print_header(f"Processing Iteration {iteration}")
-        
+
         # Check current state of outputs on Alexandria
         print_step("Checking current output status...")
         existing_outputs = check_alexandria_outputs(config)
-        
+
         # Analyze what's missing
-        missing_with_container, needed_datasets = analyze_missing(config, algorithms, existing_outputs, container_status)
-        
+        missing_with_container, needed_datasets = analyze_missing(
+            config, algorithms, existing_outputs, container_status
+        )
+
         # If nothing missing, we're done!
         if not missing_with_container:
             print_success("All outputs completed! Pipeline finished.")
             break
-        
+
         # Scan for existing datasets on Asimov
         available_datasets = scan_existing_datasets()
-        
+
         # Filter needed_datasets to exclude those already on Asimov
         needed_datasets = needed_datasets - available_datasets
-        
+
         if needed_datasets:
             print_info(f"Need to pull {len(needed_datasets)} datasets")
         if available_datasets:
-            print_info(f"{len(available_datasets)} datasets already on Asimov: {available_datasets}")
-        
+            print_info(
+                f"{len(available_datasets)} datasets already on Asimov: {available_datasets}"
+            )
+
         # Pull needed datasets and wait for completion
         if needed_datasets:
             pulled_count = pull_datasets_flow(config, needed_datasets)
             print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets")
-            
+
             # Only stop if we couldn't pull ANY datasets (real failure)
-            # If we pulled some but not all, it's likely a space issue - continue processing what we have
+            # If we pulled some but not all, it's likely a space issue.
+            # Continue processing what we have
             if pulled_count == 0:
-                print_info(f"Failed to pull any datasets. Ending processing loop.")
+                print_info("Failed to pull any datasets. Ending processing loop.")
                 print_info(f"Completed iterations: {iteration}")
                 break
             elif pulled_count < len(needed_datasets):
-                print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets (likely due to disk space limits)")
-                print_info(f"Will process these and loop back for remaining datasets")
-        
+                print_info(f"Pulled {pulled_count}/{len(needed_datasets)} datasets")
+                print_info("Will process these and loop back for remaining datasets")
+
         # Run algorithms on datasets
-        total_runs, successful_runs = run_algorithm_benchmarks_flow(config, missing_with_container, algorithms)
-        
+        total_runs, successful_runs = run_algorithm_benchmarks_flow(
+            config, missing_with_container, algorithms
+        )
+
         # Check results - stop if any failures occurred
         failed_runs = total_runs - successful_runs
         if failed_runs > 0:
-            print_info(f"Algorithm run failures detected: {failed_runs}/{total_runs} runs failed. Ending processing loop.")
+            print_info(
+                f"Algorithm run failures detected: {failed_runs}/{total_runs} runs failed."
+                " Ending processing loop."
+            )
             print_info(f"Completed iterations: {iteration}")
             break
-        
+
         print_success(f"Iteration {iteration} complete: All {successful_runs} runs successful!")
 
 

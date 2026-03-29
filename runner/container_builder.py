@@ -12,22 +12,22 @@ from .job_waiter import wait_for_job_completion
 def get_runner_dir() -> Path:
     """
     Get runner directory, handling both containerized and bare-host execution.
-    
+
     When running in Apptainer container:
     - Worker runs at /app (bound from host directory)
     - But Slurm jobs run on bare host
     - Jobs need absolute host path, not container path
-    
+
     Solution: Detect container execution and return host path.
     """
     runner_dir = Path(__file__).parent.parent
-    
+
     # Check if running in Apptainer/Singularity container
     if os.environ.get("APPTAINER_NAME") or os.environ.get("SINGULARITY_NAME"):
         # We're in container - /app is bound, but Slurm jobs run on host
         # Return absolute host path for job scripts
         runner_dir = Path("/home/nkubrakov/denovo-benchmarks-runner")
-    
+
     return runner_dir
 
 
@@ -145,15 +145,15 @@ def submit_and_wait_for_build(
 ) -> tuple[bool, str | None]:
     """
     Submit a container build job and wait for it to complete.
-    
+
     Returns:
         (success, job_id) tuple
     """
     job_id = submit_build_job(config, algo_name, version, build_state, slurm_resources)
-    
+
     if not job_id:
         return False, None
-    
+
     # Wait for completion
     success, status = wait_for_job_completion(
         job_id=job_id,
@@ -162,15 +162,16 @@ def submit_and_wait_for_build(
         log_pattern=f"build_{algo_name}_{version}_{job_id}.out",
         success_marker="Container build and transfer complete!",
     )
-    
+
     if success:
         # Verify container exists on Alexandria
         from .alexandria import check_container_exists
+
         if check_container_exists(config, algo_name, version):
             build_state.mark_completed(algo_name, version)
             return True, job_id
         else:
-            print_error(f"Build completed but container not found on Alexandria")
+            print_error("Build completed but container not found on Alexandria")
             build_state.mark_failed(algo_name, version, "Container not found after build")
             return False, job_id
     else:
@@ -215,9 +216,7 @@ def check_and_display_builds(
             )
             build_state.mark_completed(algo_name, version)
         elif not container_exists and build_status and build_status["status"] == "completed":
-            print_step(
-                f"Reconciling: {algo_name} ({version}) completed but container missing - will rebuild"
-            )
+            print_step(f"{algo_name} ({version}) completed but container missing - will rebuild")
             build_state.clear_status(algo_name, version)
 
     # Check each algorithm

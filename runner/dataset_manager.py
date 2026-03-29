@@ -103,11 +103,7 @@ class DatasetManager:
     def get_dataset_count(self) -> int:
         """Get number of datasets on Asimov."""
         return len(
-            [
-                s
-                for s in self.states.values()
-                if s["status"] in ["available", "in_use", "pulling"]
-            ]
+            [s for s in self.states.values() if s["status"] in ["available", "in_use", "pulling"]]
         )
 
     def can_fit_dataset(self, size_bytes: int, max_size_bytes: int, max_count: int) -> bool:
@@ -158,7 +154,7 @@ class DatasetManager:
                     ]
                 ):
                     return "failed"
-            
+
             # Fallback: check log files if sacct unavailable
             return self._check_job_logs(job_id)
 
@@ -173,10 +169,10 @@ class DatasetManager:
         # Look for log files in logs directory
         runner_dir = get_runner_dir()
         log_dir = runner_dir / "logs"
-        
+
         if not log_dir.exists():
             return "unknown"
-        
+
         # Find error log for this job
         error_logs = list(log_dir.glob(f"pull_*_{job_id}.err"))
         if error_logs:
@@ -184,7 +180,7 @@ class DatasetManager:
                 content = f.read()
                 if "FATAL:" in content or "exit status 1" in content or "error:" in content.lower():
                     return "failed"
-        
+
         # Find output log for this job
         output_logs = list(log_dir.glob(f"pull_*_{job_id}.out"))
         if output_logs:
@@ -194,24 +190,22 @@ class DatasetManager:
                     return "completed"
                 elif "error" in content.lower() or "failed" in content.lower():
                     return "failed"
-        
+
         return "unknown"
 
     def update_pulling_status(self, datasets_dir: Path):
         """Check pulling jobs and update status to available when completed."""
         pulling = [
-            (name, state)
-            for name, state in self.states.items()
-            if state["status"] == "pulling"
+            (name, state) for name, state in self.states.items() if state["status"] == "pulling"
         ]
-        
+
         for dataset_name, state in pulling:
             job_id = state.get("job_id")
             if not job_id:
                 continue
-            
+
             job_status = self.check_job_status(job_id)
-            
+
             if job_status == "completed":
                 # Verify dataset actually exists on disk
                 if check_dataset_on_asimov(datasets_dir, dataset_name):
@@ -262,9 +256,7 @@ def get_available_space(path: Path) -> int:
     return stat.free
 
 
-def submit_pull_job(
-    config: dict, dataset_name: str, dataset_manager: DatasetManager
-) -> str | None:
+def submit_pull_job(config: dict, dataset_name: str, dataset_manager: DatasetManager) -> str | None:
     """
     Submit a Slurm job to pull dataset from Alexandria.
     Returns job ID if successful, None otherwise.
@@ -361,14 +353,14 @@ def submit_and_wait_for_pull(
     from .job_waiter import wait_for_job_completion
 
     job_id = submit_pull_job(config, dataset_name, dataset_manager)
-    
+
     if not job_id:
         return False
-    
+
     # Wait for completion
     runner_dir = get_runner_dir()
     datasets_dir = runner_dir / config["local_datasets"]["path"]
-    
+
     success, status = wait_for_job_completion(
         job_id=job_id,
         job_name=f"dataset {dataset_name} pull",
@@ -376,7 +368,7 @@ def submit_and_wait_for_pull(
         log_pattern=f"pull_{dataset_name}_{job_id}.out",
         success_marker="Dataset Pull Complete!",
     )
-    
+
     if success:
         # Verify dataset exists on disk
         if check_dataset_on_asimov(datasets_dir, dataset_name):
@@ -384,7 +376,8 @@ def submit_and_wait_for_pull(
             return True
         else:
             from .display import print_error
-            print_error(f"Pull completed but dataset not found on Asimov")
+
+            print_error("Pull completed but dataset not found on Asimov")
             dataset_manager.mark_removed(dataset_name)
             return False
     else:
@@ -411,9 +404,7 @@ def check_and_pull_datasets(config: dict, datasets: list[str]):
     # Check what datasets we need
     available_datasets = dataset_manager.get_available_datasets()
     pulling_datasets = [
-        name
-        for name, state in dataset_manager.states.items()
-        if state["status"] == "pulling"
+        name for name, state in dataset_manager.states.items() if state["status"] == "pulling"
     ]
 
     # Report current status
@@ -428,7 +419,9 @@ def check_and_pull_datasets(config: dict, datasets: list[str]):
     )
 
     if available_datasets:
-        print_success(f"Available datasets ({len(available_datasets)}): {', '.join(available_datasets)}")
+        print_success(
+            f"Available datasets ({len(available_datasets)}): {', '.join(available_datasets)}"
+        )
 
     if pulling_datasets:
         print_info(f"Pulling datasets ({len(pulling_datasets)}): {', '.join(pulling_datasets)}")
@@ -451,12 +444,12 @@ def check_and_pull_datasets(config: dict, datasets: list[str]):
             if job_id:
                 print_success(f"  → Job {job_id} submitted")
             else:
-                print_warning(f"  → Could not submit pull job")
+                print_warning("  → Could not submit pull job")
 
     # Cleanup: remove datasets that are no longer needed
     removable = dataset_manager.get_removable_datasets()
     unneeded = [d for d in removable if d not in datasets]
-    
+
     if unneeded:
         print_info(f"Cleaning up unneeded datasets ({len(unneeded)}): {', '.join(unneeded)}")
         for dataset in unneeded:

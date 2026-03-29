@@ -49,11 +49,13 @@ def check_slurm_job_status(job_id: str) -> str:
     return "running"
 
 
-def check_job_logs_for_completion(log_pattern: str, success_marker: str, log_dir: Path = None) -> str:
+def check_job_logs_for_completion(
+    log_pattern: str, success_marker: str, log_dir: Path = None
+) -> str:
     """
     Check job logs for completion markers.
     Returns: 'completed', 'failed', or 'unknown'
-    
+
     Args:
         log_pattern: glob pattern for log files (e.g., "build_*_123.out")
         success_marker: string to look for indicating success
@@ -96,18 +98,18 @@ def wait_for_job_completion(
 ) -> tuple[bool, str]:
     """
     Wait for a Slurm job to complete, polling at regular intervals.
-    
+
     Args:
         job_id: Slurm job ID
         job_name: Human-readable job name for logging
         check_interval: Seconds between status checks (default: 60)
         log_pattern: Optional glob pattern for log files
         success_marker: Optional success marker in logs
-    
+
     Returns:
         (success: bool, status: str)
     """
-    from .display import print_info, print_step, print_success, print_error
+    from .display import print_error, print_info, print_step, print_success
 
     print_info(f"Waiting for {job_name} (job {job_id}) to complete...")
     print_info(f"Checking status every {check_interval} seconds...")

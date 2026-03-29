@@ -1,6 +1,5 @@
 """Algorithm execution orchestration."""
 
-import time
 from pathlib import Path
 
 from .container_builder import get_runner_dir
@@ -20,9 +19,7 @@ def get_slurm_resources_for_run(config: dict) -> dict:
     }
 
 
-def pull_container_from_alexandria(
-    config: dict, algo_name: str, version: str
-) -> bool:
+def pull_container_from_alexandria(config: dict, algo_name: str, version: str) -> bool:
     """Pull algorithm container from Alexandria to Asimov."""
     import subprocess
 
@@ -45,9 +42,7 @@ def pull_container_from_alexandria(
     alexandria_container = f"{containers_path}/{algo_name}/{version}/container.sif"
     check_cmd = f'ssh {alexandria_host} "[ -f {alexandria_container} ] && echo exists"'
 
-    result = subprocess.run(
-        check_cmd, shell=True, capture_output=True, text=True
-    )
+    result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
 
     if "exists" not in result.stdout:
         print_info(f"Container not found on Alexandria: {alexandria_container}")
@@ -94,16 +89,14 @@ def pull_evaluation_container(config: dict) -> bool:
     alexandria_container = f"{containers_path}/evaluation/evaluation.sif"
     check_cmd = f'ssh {alexandria_host} "[ -f {alexandria_container} ] && echo exists"'
 
-    result = subprocess.run(
-        check_cmd, shell=True, capture_output=True, text=True
-    )
+    result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
 
     if "exists" not in result.stdout:
         print_info(f"Evaluation container not found on Alexandria: {alexandria_container}")
         return False
 
     # Pull evaluation container
-    print_step(f"Pulling evaluation container...")
+    print_step("Pulling evaluation container...")
     rsync_cmd = [
         "rsync",
         "-avz",
@@ -118,7 +111,7 @@ def pull_evaluation_container(config: dict) -> bool:
     if success:
         print_success(f"✓ Evaluation container pulled: {local_container_file}")
     else:
-        print_info(f"✗ Failed to pull evaluation container")
+        print_info("✗ Failed to pull evaluation container")
 
     return success
 
@@ -164,9 +157,7 @@ def submit_run_job(
         f.write(job_script)
 
     # Submit job
-    result = subprocess.run(
-        ["sbatch", str(job_file)], capture_output=True, text=True
-    )
+    result = subprocess.run(["sbatch", str(job_file)], capture_output=True, text=True)
 
     if result.returncode != 0:
         print_info(f"Failed to submit job: {result.stderr}")
@@ -188,7 +179,7 @@ def submit_and_wait_for_run(
     config: dict, algo_name: str, version: str, dataset: str, timeout_minutes: int = 120
 ) -> tuple[bool, str | None]:
     """Submit algorithm run job and wait for completion.
-    
+
     Returns:
         (success, job_id) tuple
     """
@@ -203,9 +194,7 @@ def submit_and_wait_for_run(
     # Wait for completion
     print_info(f"Waiting for job {job_id} ({algo_name} on {dataset})...")
     success, status = wait_for_job_completion(
-        job_id=str(job_id),
-        job_name=f"{algo_name} on {dataset}",
-        check_interval=60
+        job_id=str(job_id), job_name=f"{algo_name} on {dataset}", check_interval=60
     )
 
     if success:
@@ -258,35 +247,36 @@ def augment_existing_output(config: dict, algo_name: str, version: str, dataset:
     Returns True if successful, False otherwise.
     """
     import subprocess
-    
+
     runner_dir = get_runner_dir()
     benchmarks_dir = runner_dir / config["denovo_benchmarks"]["local_path"]
     evaluation_container = benchmarks_dir / "evaluation.sif"
-    
+
     # Check if evaluation container exists
     if not evaluation_container.exists():
         print_info(f"Evaluation container not found: {evaluation_container}")
         return False
-    
+
     # Check if dataset exists locally, if not pull it
     dataset_dir = runner_dir / "datasets" / dataset
     temp_dataset = False
-    
+
     if not dataset_dir.exists():
         print_info(f"Pulling dataset {dataset}...")
         from .dataset_manager import DatasetManager, submit_and_wait_for_pull
+
         dm = DatasetManager()
         success = submit_and_wait_for_pull(config, dataset, dm)
         if not success:
-            print_info(f"✗ Failed to pull dataset")
+            print_info("✗ Failed to pull dataset")
             return False
         temp_dataset = True
-    
+
     # Read and fill augmentation template
     template_path = runner_dir / "templates" / "augment_output.slurm.sh"
     with open(template_path) as f:
         template = f.read()
-    
+
     # Fill template
     job_script = template.format(
         ALGO_NAME=algo_name,
@@ -297,13 +287,13 @@ def augment_existing_output(config: dict, algo_name: str, version: str, dataset:
         ALEXANDRIA_HOST=config["alexandria"]["host"],
         ALEXANDRIA_OUTPUTS_PATH=config["alexandria"]["outputs_path"],
     )
-    
+
     # Write job script
     job_script_path = runner_dir / "slurm_jobs" / f"augment_{algo_name}_{version}_{dataset}.sh"
     job_script_path.parent.mkdir(parents=True, exist_ok=True)
     with open(job_script_path, "w") as f:
         f.write(job_script)
-    
+
     # Submit job
     print_step(f"Submitting augmentation job for {algo_name} + {dataset}...")
     result = subprocess.run(
@@ -311,17 +301,18 @@ def augment_existing_output(config: dict, algo_name: str, version: str, dataset:
         capture_output=True,
         text=True,
     )
-    
+
     if result.returncode != 0:
         print_info(f"✗ Failed to submit job: {result.stderr}")
         return False
-    
+
     # Extract job ID
     job_id = result.stdout.strip().split()[-1]
     print_info(f"Submitted job {job_id}")
-    
+
     # Wait for completion
     from .job_waiter import wait_for_job_completion
+
     success, status = wait_for_job_completion(
         job_id=job_id,
         job_name=f"augment {algo_name} + {dataset}",
@@ -329,22 +320,25 @@ def augment_existing_output(config: dict, algo_name: str, version: str, dataset:
         log_pattern=f"augment_{algo_name}_{dataset}_{job_id}.out",
         success_marker="Complete! Augmented:",
     )
-    
+
     # Cleanup temp dataset if we pulled it
     if temp_dataset and dataset_dir.exists():
         import shutil
+
         from .dataset_manager import DatasetManager
-        print_info(f"Cleaning up temporary dataset...")
+
+        print_info("Cleaning up temporary dataset...")
         shutil.rmtree(dataset_dir)
         dm = DatasetManager()
         dm.mark_removed(dataset)
-    
+
     if success:
         print_success(f"✓ Augmented {algo_name} + {dataset}")
     else:
         print_info(f"✗ Augmentation failed for {algo_name} + {dataset}")
-    
+
     return success
+
 
 def submit_evaluation_job(
     config: dict,
@@ -353,26 +347,26 @@ def submit_evaluation_job(
     slurm_resources: dict | None = None,
 ) -> str | None:
     """Submit Slurm job to evaluate predictions for a dataset.
-    
+
     Args:
         config: Configuration dict
         dataset: Dataset name
         temp_outputs_dir: Directory containing pulled outputs for evaluation
         slurm_resources: Optional Slurm resource overrides
-    
+
     Returns:
         Job ID if successful, None otherwise
     """
     import subprocess
-    
+
     runner_dir = get_runner_dir()
     benchmarks_dir = runner_dir / config["denovo_benchmarks"]["local_path"]
-    
+
     template_path = runner_dir / "templates" / "evaluate_dataset.slurm.sh"
-    
+
     with open(template_path, "r") as f:
         template = f.read()
-    
+
     # Get Slurm resources from config or use defaults
     if slurm_resources is None:
         slurm = config.get("slurm", {})
@@ -382,19 +376,19 @@ def submit_evaluation_job(
             "memory": slurm.get("memory", "32G"),
             "time": slurm.get("time", "02:00:00"),
         }
-    
+
     # Paths for evaluation
     # Use temp pulled outputs if provided, otherwise use local outputs
     if temp_outputs_dir is None:
         output_root_dir = benchmarks_dir / "outputs"
     else:
         output_root_dir = temp_outputs_dir
-    
+
     datasets_dir = runner_dir / config["local_datasets"]["path"]
     dataset_dir = datasets_dir / dataset
     results_dir = benchmarks_dir / "results"
     evaluation_container = benchmarks_dir / "evaluation.sif"
-    
+
     # Format template
     job_script = template.format(
         DATASET=dataset,
@@ -409,23 +403,21 @@ def submit_evaluation_job(
         MEMORY=slurm_resources["memory"],
         PARTITION=slurm_resources["partition"],
     )
-    
+
     # Write job script to slurm_jobs directory
     job_script_dir = runner_dir / "slurm_jobs"
     job_script_dir.mkdir(exist_ok=True)
     job_file = job_script_dir / f"evaluate_{dataset}.slurm.sh"
     with open(job_file, "w") as f:
         f.write(job_script)
-    
+
     # Submit job
-    result = subprocess.run(
-        ["sbatch", str(job_file)], capture_output=True, text=True
-    )
-    
+    result = subprocess.run(["sbatch", str(job_file)], capture_output=True, text=True)
+
     if result.returncode != 0:
         print_info(f"✗ Failed to submit evaluation job: {result.stderr}")
         return None
-    
+
     # Extract job ID
     job_id_str = result.stdout.strip().split()[-1]
     try:
@@ -443,14 +435,14 @@ def submit_and_wait_for_evaluation(
     slurm_resources: dict | None = None,
 ) -> tuple[bool, str | None]:
     """Submit evaluation job for a dataset and wait for completion.
-    
+
     Pulls:
     - Dataset (ground truth labels + spectra)
     - Algorithm outputs from Alexandria
-    
+
     Then runs evaluation against ground truth.
     Cleans up temporary files after completion.
-    
+
     Returns:
         (success, job_id) tuple
     """
@@ -458,7 +450,7 @@ def submit_and_wait_for_evaluation(
     benchmarks_dir = runner_dir / config["denovo_benchmarks"]["local_path"]
     datasets_dir = runner_dir / config["local_datasets"]["path"]
     dataset_dir = datasets_dir / dataset
-    
+
     # Ensure dataset exists locally for ground truth (labels, spectra)
     temp_dataset = False
     if not dataset_dir.exists():
@@ -471,15 +463,15 @@ def submit_and_wait_for_evaluation(
             print_info(f"✗ Failed to pull dataset {dataset} for evaluation")
             return False, None
         temp_dataset = True
-    
+
     # Create temp outputs directory for pulling Alexandria outputs
     temp_outputs_dir = benchmarks_dir / "outputs_eval_temp"
     temp_outputs_dir.mkdir(parents=True, exist_ok=True)
-    
+
     print_info(f"Pulling algorithm outputs for {dataset} from Alexandria...")
     alexandria_host = config["alexandria"]["host"]
     alexandria_outputs_path = config["alexandria"]["outputs_path"]
-    
+
     import shlex
     import subprocess
 
@@ -496,25 +488,27 @@ def submit_and_wait_for_evaluation(
     if find_result.returncode != 0:
         print_info(f"✗ Failed to list outputs on Alexandria: {find_result.stderr.strip()}")
         import shutil
+
         shutil.rmtree(temp_outputs_dir, ignore_errors=True)
         if temp_dataset and dataset_dir.exists():
             print_info(f"Cleaning up temporary dataset {dataset}...")
             shutil.rmtree(dataset_dir)
             from .dataset_manager import DatasetManager
+
             DatasetManager().mark_removed(dataset)
         return False, None
 
-    remote_dataset_dirs = [
-        line.strip() for line in find_result.stdout.splitlines() if line.strip()
-    ]
+    remote_dataset_dirs = [line.strip() for line in find_result.stdout.splitlines() if line.strip()]
     if not remote_dataset_dirs:
         print_info(f"✗ No outputs found on Alexandria for dataset {dataset}")
         import shutil
+
         shutil.rmtree(temp_outputs_dir, ignore_errors=True)
         if temp_dataset and dataset_dir.exists():
             print_info(f"Cleaning up temporary dataset {dataset}...")
             shutil.rmtree(dataset_dir)
             from .dataset_manager import DatasetManager
+
             DatasetManager().mark_removed(dataset)
         return False, None
 
@@ -541,15 +535,16 @@ def submit_and_wait_for_evaluation(
         )
         if rsync_result.returncode != 0:
             print_info(
-                f"✗ Failed pulling outputs from {remote_dataset_dir}: "
-                f"{rsync_result.stderr.strip()}"
+                f"✗ Failed pulling outputs from {remote_dataset_dir}: {rsync_result.stderr.strip()}"
             )
             import shutil
+
             shutil.rmtree(temp_outputs_dir, ignore_errors=True)
             if temp_dataset and dataset_dir.exists():
                 print_info(f"Cleaning up temporary dataset {dataset}...")
                 shutil.rmtree(dataset_dir)
                 from .dataset_manager import DatasetManager
+
                 DatasetManager().mark_removed(dataset)
             return False, None
         pulled_paths.append(local_dataset_dir)
@@ -561,30 +556,32 @@ def submit_and_wait_for_evaluation(
             f"for {dataset}"
         )
         import shutil
+
         shutil.rmtree(temp_outputs_dir, ignore_errors=True)
         if temp_dataset and dataset_dir.exists():
             print_info(f"Cleaning up temporary dataset {dataset}...")
             shutil.rmtree(dataset_dir)
             from .dataset_manager import DatasetManager
+
             DatasetManager().mark_removed(dataset)
         return False, None
 
-    print_success(
-        f"✓ Pulled {len(pulled_output_files)} output.csv file(s) for {dataset}"
-    )
+    print_success(f"✓ Pulled {len(pulled_output_files)} output.csv file(s) for {dataset}")
 
     job_id = submit_evaluation_job(config, dataset, temp_outputs_dir, slurm_resources)
-    
+
     if job_id is None:
         import shutil
+
         shutil.rmtree(temp_outputs_dir, ignore_errors=True)
         if temp_dataset and dataset_dir.exists():
             print_info(f"Cleaning up temporary dataset {dataset}...")
             shutil.rmtree(dataset_dir)
             from .dataset_manager import DatasetManager
+
             DatasetManager().mark_removed(dataset)
         return False, None
-    
+
     # Wait for completion
     print_info(f"Waiting for evaluation job {job_id} for {dataset}...")
     success, status = wait_for_job_completion(
@@ -594,7 +591,7 @@ def submit_and_wait_for_evaluation(
         log_pattern=f"evaluate_{dataset}_{job_id}.out",
         success_marker="✓ Evaluation completed successfully!",
     )
-    
+
     if success:
         print_success(f"✓ Evaluation completed for {dataset}")
     else:
@@ -602,13 +599,15 @@ def submit_and_wait_for_evaluation(
 
     # Cleanup temporary files
     import shutil
+
     print_info(f"Cleaning up temporary outputs for {dataset}...")
     shutil.rmtree(temp_outputs_dir, ignore_errors=True)
-    
+
     if temp_dataset and dataset_dir.exists():
         print_info(f"Cleaning up temporary dataset {dataset}...")
         shutil.rmtree(dataset_dir)
         from .dataset_manager import DatasetManager
+
         DatasetManager().mark_removed(dataset)
-    
+
     return success, job_id

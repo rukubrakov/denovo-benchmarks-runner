@@ -1,6 +1,5 @@
 """Alexandria storage operations."""
 
-import csv
 import subprocess
 import tempfile
 from pathlib import Path
@@ -85,7 +84,7 @@ def check_container_exists(config: dict, algo_name: str, version: str) -> bool:
     """
     host = config["alexandria"]["host"]
     containers_base = config["alexandria"]["containers_path"]
-    
+
     # Special handling for evaluation container
     if algo_name == "evaluation":
         container_path = f"{containers_base}/evaluation/evaluation.sif"
@@ -150,7 +149,9 @@ def check_containers(config: dict, algorithms: list[dict[str, str]]) -> dict[str
     return container_status
 
 
-def check_output_needs_augmentation(config: dict, algo_name: str, version: str, dataset: str) -> bool:
+def check_output_needs_augmentation(
+    config: dict, algo_name: str, version: str, dataset: str
+) -> bool:
     """
     Check if an output CSV on Alexandria is missing augmentation (SA and pred_RT columns).
     Returns True if augmentation is needed, False otherwise.
@@ -158,21 +159,21 @@ def check_output_needs_augmentation(config: dict, algo_name: str, version: str, 
     host = config["alexandria"]["host"]
     outputs_path = config["alexandria"]["outputs_path"]
     output_csv = f"{outputs_path}/{algo_name}/{version}/{dataset}/output.csv"
-    
+
     # Check if output.csv exists
     result = subprocess.run(
         ["ssh", host, f'test -f {output_csv} && echo "exists" || echo "missing"'],
         capture_output=True,
         text=True,
     )
-    
+
     if result.stdout.strip() != "exists":
         return False
-    
+
     # Download just the header line to check columns
-    with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".csv", delete=False) as tmp:
         tmp_path = tmp.name
-    
+
     try:
         # Get first line (header) from the CSV
         result = subprocess.run(
@@ -180,51 +181,53 @@ def check_output_needs_augmentation(config: dict, algo_name: str, version: str, 
             capture_output=True,
             text=True,
         )
-        
+
         if result.returncode != 0:
             return False
-        
+
         header = result.stdout.strip()
-        
+
         # Check if SA and pred_RT columns exist
-        has_sa = 'SA' in header.split(',')
-        has_pred_rt = 'pred_RT' in header.split(',')
-        
+        has_sa = "SA" in header.split(",")
+        has_pred_rt = "pred_RT" in header.split(",")
+
         # Needs augmentation if either column is missing
         return not (has_sa and has_pred_rt)
-    
+
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
 
-def get_outputs_needing_augmentation(config: dict, existing_outputs: set[tuple[str, str]], algorithms: list[dict[str, str]]) -> list[tuple[str, str, str]]:
+def get_outputs_needing_augmentation(
+    config: dict, existing_outputs: set[tuple[str, str]], algorithms: list[dict[str, str]]
+) -> list[tuple[str, str, str]]:
     """
     Check which existing outputs need augmentation.
     Returns list of (algo_name, version, dataset) tuples.
     """
     print_header("Checking Outputs for Augmentation")
-    
+
     needs_augmentation = []
-    
+
     # Create algo version lookup
     algo_versions = {algo["name"]: algo["version"] for algo in algorithms}
-    
+
     for algo_name, dataset in existing_outputs:
         if algo_name not in algo_versions:
             continue
-        
+
         version = algo_versions[algo_name]
-        
+
         print_step(f"Checking {algo_name} + {dataset}...")
         if check_output_needs_augmentation(config, algo_name, version, dataset):
-            print_warning(f"  ⚠ Missing augmentation (no SA/pred_RT)")
+            print_warning("  ⚠ Missing augmentation (no SA/pred_RT)")
             needs_augmentation.append((algo_name, version, dataset))
         else:
-            print_success(f"  ✓ Already augmented")
-    
+            print_success("  ✓ Already augmented")
+
     if needs_augmentation:
         print_info(f"Found {len(needs_augmentation)} output(s) needing augmentation")
     else:
         print_success("All existing outputs are already augmented")
-    
+
     return needs_augmentation
