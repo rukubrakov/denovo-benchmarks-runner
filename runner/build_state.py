@@ -106,7 +106,7 @@ class BuildState:
                     ]
                 ):
                     return "failed"
-            
+
             # Fallback: sacct unavailable or failed, check log files
             # This handles systems with accounting disabled
             return self._check_job_logs(job_id)
@@ -121,19 +121,19 @@ class BuildState:
         """
         runner_dir = Path(__file__).parent.parent
         logs_dir = runner_dir / "logs"
-        
+
         # Find error log for this job
         error_logs = list(logs_dir.glob(f"build_*_{job_id}.err"))
-        
+
         if not error_logs:
             return "unknown"
-        
+
         error_log = error_logs[0]
-        
+
         try:
             with open(error_log, "r") as f:
                 content = f.read()
-                
+
             # Check for failure indicators
             failure_indicators = [
                 "FATAL:",
@@ -143,22 +143,22 @@ class BuildState:
                 "Error:",
                 "FAILED",
             ]
-            
+
             if any(indicator in content for indicator in failure_indicators):
                 return "failed"
-            
+
             # Check for success indicators
             success_indicators = [
                 "Container Build Complete!",
                 "✓ Container transferred to Alexandria",
             ]
-            
+
             if any(indicator in content for indicator in success_indicators):
                 return "completed"
-                
+
         except Exception:
             pass
-        
+
         return "unknown"
 
     def update_from_slurm(self, config: dict = None):
