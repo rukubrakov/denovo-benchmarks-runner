@@ -12,6 +12,7 @@ from .algorithm_runner import (
     cleanup_local_container,
     pull_container_from_alexandria,
     submit_and_wait_for_run,
+    submit_and_wait_for_evaluation,
 )
 from .algorithms import display_algorithms, get_algorithms
 from .build_state import BuildState
@@ -68,6 +69,7 @@ __all__ = [
     "wait_for_job_completion",
     "pull_container_from_alexandria",
     "submit_and_wait_for_run",
+    "submit_and_wait_for_evaluation",
     "check_output_exists_on_alexandria",
     "cleanup_local_container",
 ]

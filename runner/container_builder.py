@@ -142,15 +142,17 @@ def submit_and_wait_for_build(
     version: str,
     build_state: BuildState,
     slurm_resources: dict | None = None,
-) -> bool:
+) -> tuple[bool, str | None]:
     """
     Submit a container build job and wait for it to complete.
-    Returns True if successful, False otherwise.
+    
+    Returns:
+        (success, job_id) tuple
     """
     job_id = submit_build_job(config, algo_name, version, build_state, slurm_resources)
     
     if not job_id:
-        return False
+        return False, None
     
     # Wait for completion
     success, status = wait_for_job_completion(
@@ -166,14 +168,14 @@ def submit_and_wait_for_build(
         from .alexandria import check_container_exists
         if check_container_exists(config, algo_name, version):
             build_state.mark_completed(algo_name, version)
-            return True
+            return True, job_id
         else:
             print_error(f"Build completed but container not found on Alexandria")
             build_state.mark_failed(algo_name, version, "Container not found after build")
-            return False
+            return False, job_id
     else:
         build_state.mark_failed(algo_name, version, f"Build job {status}")
-        return False
+        return False, job_id
 
 
 def check_and_display_builds(

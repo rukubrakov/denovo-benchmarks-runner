@@ -157,8 +157,9 @@ def submit_run_job(
         PARTITION=slurm_resources["partition"],
     )
 
-    # Write job script to temp file
-    job_file = runner_dir / f"run_{algo_name}_{dataset}.slurm.sh"
+    job_script_dir = runner_dir / "slurm_jobs"
+    job_script_dir.mkdir(exist_ok=True)
+    job_file = job_script_dir / f"run_{algo_name}_{version}_{dataset}.slurm.sh"
     with open(job_file, "w") as f:
         f.write(job_script)
 
@@ -185,15 +186,19 @@ def submit_run_job(
 
 def submit_and_wait_for_run(
     config: dict, algo_name: str, version: str, dataset: str, timeout_minutes: int = 120
-) -> bool:
-    """Submit algorithm run job and wait for completion."""
+) -> tuple[bool, str | None]:
+    """Submit algorithm run job and wait for completion.
+    
+    Returns:
+        (success, job_id) tuple
+    """
     slurm_resources = get_slurm_resources_for_run(config)
 
     # Submit job
     job_id = submit_run_job(config, algo_name, version, dataset, slurm_resources)
 
     if job_id is None:
-        return False
+        return False, None
 
     # Wait for completion
     print_info(f"Waiting for job {job_id} ({algo_name} on {dataset})...")
@@ -208,7 +213,7 @@ def submit_and_wait_for_run(
     else:
         print_info(f"✗ Run failed or timed out: {algo_name} on {dataset}")
 
-    return success
+    return success, str(job_id)
 
 
 def check_output_exists_on_alexandria(
@@ -340,3 +345,270 @@ def augment_existing_output(config: dict, algo_name: str, version: str, dataset:
         print_info(f"✗ Augmentation failed for {algo_name} + {dataset}")
     
     return success
+
+def submit_evaluation_job(
+    config: dict,
+    dataset: str,
+    temp_outputs_dir: Path | None = None,
+    slurm_resources: dict | None = None,
+) -> str | None:
+    """Submit Slurm job to evaluate predictions for a dataset.
+    
+    Args:
+        config: Configuration dict
+        dataset: Dataset name
+        temp_outputs_dir: Directory containing pulled outputs for evaluation
+        slurm_resources: Optional Slurm resource overrides
+    
+    Returns:
+        Job ID if successful, None otherwise
+    """
+    import subprocess
+    
+    runner_dir = get_runner_dir()
+    benchmarks_dir = runner_dir / config["denovo_benchmarks"]["local_path"]
+    
+    template_path = runner_dir / "templates" / "evaluate_dataset.slurm.sh"
+    
+    with open(template_path, "r") as f:
+        template = f.read()
+    
+    # Get Slurm resources from config or use defaults
+    if slurm_resources is None:
+        slurm = config.get("slurm", {})
+        slurm_resources = {
+            "partition": slurm.get("partition", "one_hour"),
+            "cpus": slurm.get("cpus", 4),
+            "memory": slurm.get("memory", "32G"),
+            "time": slurm.get("time", "02:00:00"),
+        }
+    
+    # Paths for evaluation
+    # Use temp pulled outputs if provided, otherwise use local outputs
+    if temp_outputs_dir is None:
+        output_root_dir = benchmarks_dir / "outputs"
+    else:
+        output_root_dir = temp_outputs_dir
+    
+    datasets_dir = runner_dir / config["local_datasets"]["path"]
+    dataset_dir = datasets_dir / dataset
+    results_dir = benchmarks_dir / "results"
+    evaluation_container = benchmarks_dir / "evaluation.sif"
+    
+    # Format template
+    job_script = template.format(
+        DATASET=dataset,
+        RUNNER_DIR=str(runner_dir),
+        BENCHMARKS_DIR=str(benchmarks_dir),
+        OUTPUT_ROOT_DIR=str(output_root_dir),
+        DATASET_DIR=str(dataset_dir),
+        RESULTS_DIR=str(results_dir),
+        EVALUATION_CONTAINER=str(evaluation_container),
+        TIME=slurm_resources["time"],
+        CPUS=slurm_resources["cpus"],
+        MEMORY=slurm_resources["memory"],
+        PARTITION=slurm_resources["partition"],
+    )
+    
+    # Write job script to slurm_jobs directory
+    job_script_dir = runner_dir / "slurm_jobs"
+    job_script_dir.mkdir(exist_ok=True)
+    job_file = job_script_dir / f"evaluate_{dataset}.slurm.sh"
+    with open(job_file, "w") as f:
+        f.write(job_script)
+    
+    # Submit job
+    result = subprocess.run(
+        ["sbatch", str(job_file)], capture_output=True, text=True
+    )
+    
+    if result.returncode != 0:
+        print_info(f"✗ Failed to submit evaluation job: {result.stderr}")
+        return None
+    
+    # Extract job ID
+    job_id_str = result.stdout.strip().split()[-1]
+    try:
+        job_id = int(job_id_str)
+        print_info(f"Submitted evaluation job {job_id} for {dataset}")
+        return str(job_id)
+    except ValueError:
+        print_info(f"Failed to parse job ID from: {result.stdout}")
+        return None
+
+
+def submit_and_wait_for_evaluation(
+    config: dict,
+    dataset: str,
+    slurm_resources: dict | None = None,
+) -> tuple[bool, str | None]:
+    """Submit evaluation job for a dataset and wait for completion.
+    
+    Pulls:
+    - Dataset (ground truth labels + spectra)
+    - Algorithm outputs from Alexandria
+    
+    Then runs evaluation against ground truth.
+    Cleans up temporary files after completion.
+    
+    Returns:
+        (success, job_id) tuple
+    """
+    runner_dir = get_runner_dir()
+    benchmarks_dir = runner_dir / config["denovo_benchmarks"]["local_path"]
+    datasets_dir = runner_dir / config["local_datasets"]["path"]
+    dataset_dir = datasets_dir / dataset
+    
+    # Ensure dataset exists locally for ground truth (labels, spectra)
+    temp_dataset = False
+    if not dataset_dir.exists():
+        print_info(f"Dataset {dataset} not found locally, pulling for evaluation...")
+        from .dataset_manager import DatasetManager, submit_and_wait_for_pull
+
+        dataset_manager = DatasetManager()
+        pulled = submit_and_wait_for_pull(config, dataset, dataset_manager)
+        if not pulled:
+            print_info(f"✗ Failed to pull dataset {dataset} for evaluation")
+            return False, None
+        temp_dataset = True
+    
+    # Create temp outputs directory for pulling Alexandria outputs
+    temp_outputs_dir = benchmarks_dir / "outputs_eval_temp"
+    temp_outputs_dir.mkdir(parents=True, exist_ok=True)
+    
+    print_info(f"Pulling algorithm outputs for {dataset} from Alexandria...")
+    alexandria_host = config["alexandria"]["host"]
+    alexandria_outputs_path = config["alexandria"]["outputs_path"]
+    
+    import shlex
+    import subprocess
+
+    find_cmd = (
+        f"find {shlex.quote(alexandria_outputs_path)} "
+        f"-mindepth 3 -maxdepth 3 -type d -name {shlex.quote(dataset)}"
+    )
+    find_result = subprocess.run(
+        ["ssh", alexandria_host, find_cmd],
+        capture_output=True,
+        text=True,
+    )
+
+    if find_result.returncode != 0:
+        print_info(f"✗ Failed to list outputs on Alexandria: {find_result.stderr.strip()}")
+        import shutil
+        shutil.rmtree(temp_outputs_dir, ignore_errors=True)
+        if temp_dataset and dataset_dir.exists():
+            print_info(f"Cleaning up temporary dataset {dataset}...")
+            shutil.rmtree(dataset_dir)
+            from .dataset_manager import DatasetManager
+            DatasetManager().mark_removed(dataset)
+        return False, None
+
+    remote_dataset_dirs = [
+        line.strip() for line in find_result.stdout.splitlines() if line.strip()
+    ]
+    if not remote_dataset_dirs:
+        print_info(f"✗ No outputs found on Alexandria for dataset {dataset}")
+        import shutil
+        shutil.rmtree(temp_outputs_dir, ignore_errors=True)
+        if temp_dataset and dataset_dir.exists():
+            print_info(f"Cleaning up temporary dataset {dataset}...")
+            shutil.rmtree(dataset_dir)
+            from .dataset_manager import DatasetManager
+            DatasetManager().mark_removed(dataset)
+        return False, None
+
+    pulled_paths: list[Path] = []
+    for remote_dataset_dir in remote_dataset_dirs:
+        remote_path = Path(remote_dataset_dir)
+        if len(remote_path.parts) < 3:
+            continue
+        algo_name = remote_path.parts[-3]
+        algo_version = remote_path.parts[-2]
+        local_dataset_dir = temp_outputs_dir / algo_name / algo_version / dataset
+        local_dataset_dir.mkdir(parents=True, exist_ok=True)
+
+        rsync_result = subprocess.run(
+            [
+                "rsync",
+                "-az",
+                "--delete",
+                f"{alexandria_host}:{remote_dataset_dir}/",
+                f"{local_dataset_dir}/",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if rsync_result.returncode != 0:
+            print_info(
+                f"✗ Failed pulling outputs from {remote_dataset_dir}: "
+                f"{rsync_result.stderr.strip()}"
+            )
+            import shutil
+            shutil.rmtree(temp_outputs_dir, ignore_errors=True)
+            if temp_dataset and dataset_dir.exists():
+                print_info(f"Cleaning up temporary dataset {dataset}...")
+                shutil.rmtree(dataset_dir)
+                from .dataset_manager import DatasetManager
+                DatasetManager().mark_removed(dataset)
+            return False, None
+        pulled_paths.append(local_dataset_dir)
+
+    pulled_output_files = list(temp_outputs_dir.glob(f"*/*/{dataset}/output.csv"))
+    if not pulled_output_files:
+        print_info(
+            f"✗ Pulled {len(pulled_paths)} dataset directories but found no output.csv files "
+            f"for {dataset}"
+        )
+        import shutil
+        shutil.rmtree(temp_outputs_dir, ignore_errors=True)
+        if temp_dataset and dataset_dir.exists():
+            print_info(f"Cleaning up temporary dataset {dataset}...")
+            shutil.rmtree(dataset_dir)
+            from .dataset_manager import DatasetManager
+            DatasetManager().mark_removed(dataset)
+        return False, None
+
+    print_success(
+        f"✓ Pulled {len(pulled_output_files)} output.csv file(s) for {dataset}"
+    )
+
+    job_id = submit_evaluation_job(config, dataset, temp_outputs_dir, slurm_resources)
+    
+    if job_id is None:
+        import shutil
+        shutil.rmtree(temp_outputs_dir, ignore_errors=True)
+        if temp_dataset and dataset_dir.exists():
+            print_info(f"Cleaning up temporary dataset {dataset}...")
+            shutil.rmtree(dataset_dir)
+            from .dataset_manager import DatasetManager
+            DatasetManager().mark_removed(dataset)
+        return False, None
+    
+    # Wait for completion
+    print_info(f"Waiting for evaluation job {job_id} for {dataset}...")
+    success, status = wait_for_job_completion(
+        job_id=job_id,
+        job_name=f"evaluation for {dataset}",
+        check_interval=60,
+        log_pattern=f"evaluate_{dataset}_{job_id}.out",
+        success_marker="✓ Evaluation completed successfully!",
+    )
+    
+    if success:
+        print_success(f"✓ Evaluation completed for {dataset}")
+    else:
+        print_info(f"✗ Evaluation failed or timed out for {dataset}")
+
+    # Cleanup temporary files
+    import shutil
+    print_info(f"Cleaning up temporary outputs for {dataset}...")
+    shutil.rmtree(temp_outputs_dir, ignore_errors=True)
+    
+    if temp_dataset and dataset_dir.exists():
+        print_info(f"Cleaning up temporary dataset {dataset}...")
+        shutil.rmtree(dataset_dir)
+        from .dataset_manager import DatasetManager
+        DatasetManager().mark_removed(dataset)
+    
+    return success, job_id

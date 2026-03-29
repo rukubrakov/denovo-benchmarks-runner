@@ -30,6 +30,7 @@ from runner import (
     print_success,
     pull_container_from_alexandria,
     submit_and_wait_for_build,
+    submit_and_wait_for_evaluation,
     submit_and_wait_for_pull,
     submit_and_wait_for_run,
 )
@@ -110,16 +111,32 @@ def analyze_missing(
     return missing_with_container, needed_datasets
 
 
+def read_error_log(log_pattern: str, lines: int = 20) -> str:
+    log_dir = Path(__file__).parent / "logs"
+    error_logs = list(log_dir.glob(log_pattern))
+    if not error_logs:
+        return ""
+    with open(error_logs[0], "r") as f:
+        all_lines = f.readlines()
+        excerpt = ''.join(all_lines[-lines:])
+        return excerpt
+
 @task(task_run_name="Build Container: {algo_name}")
 def build_single_container(config: dict, algo_name: str, version: str, build_state: BuildState) -> bool:
     """Build a single container and wait for completion."""
     print_info(f"Building {algo_name} ({version})...")
-    success = submit_and_wait_for_build(config, algo_name, version, build_state)
+    success, job_id = submit_and_wait_for_build(config, algo_name, version, build_state)
     if success:
         print_success(f"✓ {algo_name} ({version}) built successfully")
         return True
     else:
-        raise Exception(f"Failed to build {algo_name} ({version})")
+        error_msg = f"Failed to build {algo_name} ({version})"
+        if job_id:
+            error_msg += f"\n\nSlurm Job ID: {job_id}"
+            log_excerpt = read_error_log(f"build_{algo_name}_{version}_{job_id}.err")
+            if log_excerpt:
+                error_msg += f"\n\nError log (last 20 lines):\n{log_excerpt}"
+        raise Exception(error_msg)
 
 
 @task(task_run_name="Augment {algo_name} + {dataset}")
@@ -187,7 +204,7 @@ def run_single_combination(
     
     # Run algorithm
     print_info(f"Running {algo_name} on {dataset}...")
-    success = submit_and_wait_for_run(config, algo_name, version, dataset)
+    success, job_id = submit_and_wait_for_run(config, algo_name, version, dataset)
     
     # Cleanup container to save space
     print_step(f"Cleaning up container for {algo_name}...")
@@ -197,7 +214,13 @@ def run_single_combination(
         print_success(f"✓ Completed {algo_name} on {dataset}")
         return True
     else:
-        raise Exception(f"Algorithm run failed for {algo_name} on {dataset}")
+        error_msg = f"Algorithm run failed for {algo_name} on {dataset}"
+        if job_id:
+            error_msg += f"\n\nSlurm Job ID: {job_id}"
+            log_excerpt = read_error_log(f"run_{algo_name}_{dataset}_{job_id}.err")
+            if log_excerpt:
+                error_msg += f"\n\nError log (last 20 lines):\n{log_excerpt}"
+        raise Exception(error_msg)
 
 
 @task(name="Cleanup Workspace")
@@ -389,6 +412,92 @@ def cleanup_dataset_task(dataset_name: str) -> None:
     dataset_manager.cleanup_dataset(dataset_name)
 
 
+@task(task_run_name="Evaluate Dataset: {dataset_name}")
+def evaluate_dataset_task(config: dict, dataset_name: str) -> bool:
+    """Evaluate all algorithm predictions for a dataset."""
+    print_info(f"Evaluating predictions for {dataset_name}...")
+    success, job_id = submit_and_wait_for_evaluation(config, dataset_name)
+    if success:
+        print_success(f"✓ Evaluation completed for {dataset_name}")
+        return True
+    else:
+        error_msg = f"Evaluation failed for {dataset_name}"
+        if job_id:
+            error_msg += f"\n\nSlurm Job ID: {job_id}"
+            log_excerpt = read_error_log(f"evaluate_{dataset_name}_{job_id}.err")
+            if log_excerpt:
+                error_msg += f"\n\nError log (last 20 lines):\n{log_excerpt}"
+        raise Exception(error_msg)
+
+
+@task(name="Find Datasets Needing Evaluation")
+def find_datasets_needing_evaluation(
+    config: dict,
+    algorithms: list[dict[str, str]],
+    existing_outputs: set[tuple[str, str]],
+) -> list[str]:
+    """Find datasets that have complete outputs but missing evaluation results."""
+    datasets = config["datasets"]
+    algo_names = {algo["name"] for algo in algorithms}
+
+    runner_dir = Path(__file__).parent
+    benchmarks_dir = runner_dir / config["denovo_benchmarks"]["local_path"]
+    results_dir = benchmarks_dir / "results"
+
+    expected_result_files = [
+        "metrics.csv",
+        "peptide_precision_plot_data.csv",
+        "AA_precision_plot_data.csv",
+        "RT_difference_plot_data.csv",
+        "SA_plot_data.csv",
+        "number_of_proteome_matches_plot_data.csv",
+    ]
+
+    datasets_to_evaluate = []
+    for dataset_name in datasets:
+        has_all_outputs = all((algo_name, dataset_name) in existing_outputs for algo_name in algo_names)
+        if not has_all_outputs:
+            continue
+
+        dataset_results_dir = results_dir / dataset_name
+        has_all_result_files = all(
+            (dataset_results_dir / file_name).exists()
+            for file_name in expected_result_files
+        )
+        if not has_all_result_files:
+            datasets_to_evaluate.append(dataset_name)
+
+    if datasets_to_evaluate:
+        print_info(
+            f"Datasets with complete outputs but missing results: {datasets_to_evaluate}"
+        )
+    else:
+        print_info("All complete datasets already have evaluation results")
+
+    return datasets_to_evaluate
+
+
+@flow(name="Evaluate Datasets", log_prints=True)
+def evaluate_datasets_flow(config: dict, datasets_to_evaluate: list[str]) -> tuple[int, int]:
+    """Evaluate datasets sequentially and return (total, successful)."""
+    if not datasets_to_evaluate:
+        return 0, 0
+
+    print_header("Evaluating Complete Datasets")
+    print_info(f"Evaluating {len(datasets_to_evaluate)} dataset(s)...")
+
+    successful = 0
+    for dataset_name in datasets_to_evaluate:
+        try:
+            evaluate_dataset_task(config, dataset_name)
+            successful += 1
+        except Exception as e:
+            print_info(f"⚠ Evaluation failed for {dataset_name}")
+            print_info(f"Error: {str(e)}")
+
+    return len(datasets_to_evaluate), successful
+
+
 @flow(name="Run Algorithm Benchmarks", log_prints=True)
 def run_algorithm_benchmarks_flow(
     config: dict,
@@ -456,8 +565,18 @@ def run_algorithm_benchmarks_flow(
         
         print_info(f"Completed {dataset_successes}/{len(algo_list)} runs for {dataset_name}")
         
-        # Only clean up dataset if ALL algorithms succeeded
+        # Only evaluate and clean up dataset if ALL algorithms succeeded
         if dataset_successes == len(algo_list):
+            # Run evaluation for this dataset
+            print_header(f"Evaluating Dataset: {dataset_name}")
+            try:
+                evaluate_dataset_task(config, dataset_name)
+                print_success(f"✓ Evaluation completed for {dataset_name}")
+            except Exception as e:
+                print_info(f"⚠ Evaluation failed for {dataset_name}, but continuing...")
+                print_info(f"Error: {str(e)}")
+            
+            # Clean up dataset
             cleanup_dataset_task(dataset_name)
         else:
             print_info(f"Some algorithms failed - keeping dataset {dataset_name} for retry")
@@ -545,6 +664,13 @@ def main():
         if outputs_needing_augmentation:
             augmented_count = augment_existing_outputs_task(config, outputs_needing_augmentation)
             print_success(f"Augmented {augmented_count} existing outputs")
+
+        datasets_to_evaluate = find_datasets_needing_evaluation(config, algorithms, existing_outputs)
+        total_eval, successful_eval = evaluate_datasets_flow(config, datasets_to_evaluate)
+        if total_eval > 0:
+            print_info(
+                f"Initial evaluation pass complete: {successful_eval}/{total_eval} dataset(s) successful"
+            )
 
     # Main processing loop: keep pulling datasets and running algorithms until all done
     print_header("Starting Main Processing Loop")
