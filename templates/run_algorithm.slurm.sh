@@ -104,7 +104,7 @@ echo
 
 echo "Step 5: Augmenting predictions with RT and SA..."
 DATASET_DIR="$RUNNER_DIR/datasets/$DATASET"
-EVALUATION_CONTAINER="$BENCHMARKS_DIR/evaluation.sif"
+EVALUATION_CONTAINER="$RUNNER_DIR/evaluation.sif"
 
 if [ -f "$EVALUATION_CONTAINER" ]; then
     apptainer exec \

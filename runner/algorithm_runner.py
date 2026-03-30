@@ -5,6 +5,7 @@ from pathlib import Path
 from .container_builder import get_runner_dir
 from .display import print_info, print_step, print_success
 from .job_waiter import wait_for_job_completion
+from .remote_fs import remote_file_exists, rsync_pull
 
 
 def get_slurm_resources_for_run(config: dict) -> dict:
@@ -21,45 +22,26 @@ def get_slurm_resources_for_run(config: dict) -> dict:
 
 def pull_container_from_alexandria(config: dict, algo_name: str, version: str) -> bool:
     """Pull algorithm container from Alexandria to Asimov."""
-    import subprocess
-
     alexandria_host = config["alexandria"]["host"]
     containers_path = config["alexandria"]["containers_path"]
 
     runner_dir = get_runner_dir()
-    local_container_dir = runner_dir / "containers" / algo_name / version
-    local_container_file = local_container_dir / "container.sif"
+    local_container_file = runner_dir / "containers" / algo_name / version / "container.sif"
 
     # Check if already exists locally
     if local_container_file.exists():
         print_info(f"Container already on Asimov: {local_container_file}")
         return True
 
-    # Prepare directories
-    local_container_dir.mkdir(parents=True, exist_ok=True)
-
     # Check if exists on Alexandria
     alexandria_container = f"{containers_path}/{algo_name}/{version}/container.sif"
-    check_cmd = f'ssh {alexandria_host} "[ -f {alexandria_container} ] && echo exists"'
-
-    result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
-
-    if "exists" not in result.stdout:
+    if not remote_file_exists(alexandria_host, alexandria_container):
         print_info(f"Container not found on Alexandria: {alexandria_container}")
         return False
 
     # Pull container
     print_step(f"Pulling container for {algo_name} ({version})...")
-    rsync_cmd = [
-        "rsync",
-        "-avz",
-        "--progress",
-        f"{alexandria_host}:{alexandria_container}",
-        str(local_container_file),
-    ]
-
-    result = subprocess.run(rsync_cmd)
-    success = result.returncode == 0
+    success = rsync_pull(alexandria_host, alexandria_container, local_container_file)
 
     if success:
         print_success(f"✓ Container pulled: {local_container_file}")
@@ -71,14 +53,11 @@ def pull_container_from_alexandria(config: dict, algo_name: str, version: str) -
 
 def pull_evaluation_container(config: dict) -> bool:
     """Pull evaluation container from Alexandria to Asimov benchmarks directory."""
-    import subprocess
-
     alexandria_host = config["alexandria"]["host"]
     containers_path = config["alexandria"]["containers_path"]
 
     runner_dir = get_runner_dir()
-    benchmarks_dir = runner_dir / "denovo_benchmarks"
-    local_container_file = benchmarks_dir / "evaluation.sif"
+    local_container_file = runner_dir / "evaluation.sif"
 
     # Check if already exists locally
     if local_container_file.exists():
@@ -87,26 +66,13 @@ def pull_evaluation_container(config: dict) -> bool:
 
     # Check if exists on Alexandria
     alexandria_container = f"{containers_path}/evaluation/evaluation.sif"
-    check_cmd = f'ssh {alexandria_host} "[ -f {alexandria_container} ] && echo exists"'
-
-    result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
-
-    if "exists" not in result.stdout:
+    if not remote_file_exists(alexandria_host, alexandria_container):
         print_info(f"Evaluation container not found on Alexandria: {alexandria_container}")
         return False
 
     # Pull evaluation container
     print_step("Pulling evaluation container...")
-    rsync_cmd = [
-        "rsync",
-        "-avz",
-        "--progress",
-        f"{alexandria_host}:{alexandria_container}",
-        str(local_container_file),
-    ]
-
-    result = subprocess.run(rsync_cmd)
-    success = result.returncode == 0
+    success = rsync_pull(alexandria_host, alexandria_container, local_container_file)
 
     if success:
         print_success(f"✓ Evaluation container pulled: {local_container_file}")
@@ -250,7 +216,7 @@ def augment_existing_output(config: dict, algo_name: str, version: str, dataset:
 
     runner_dir = get_runner_dir()
     benchmarks_dir = runner_dir / config["denovo_benchmarks"]["local_path"]
-    evaluation_container = benchmarks_dir / "evaluation.sif"
+    evaluation_container = runner_dir / "evaluation.sif"
 
     # Check if evaluation container exists
     if not evaluation_container.exists():
@@ -387,7 +353,7 @@ def submit_evaluation_job(
     datasets_dir = runner_dir / config["local_datasets"]["path"]
     dataset_dir = datasets_dir / dataset
     results_dir = benchmarks_dir / "results"
-    evaluation_container = benchmarks_dir / "evaluation.sif"
+    evaluation_container = runner_dir / "evaluation.sif"
 
     # Format template
     job_script = template.format(

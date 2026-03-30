@@ -1,10 +1,15 @@
 """Alexandria storage operations."""
 
-import subprocess
-import tempfile
 from pathlib import Path
 
 from .display import print_header, print_info, print_step, print_success, print_warning
+from .remote_fs import (
+    remote_dir_exists,
+    remote_file_exists,
+    remote_find,
+    remote_mkdir,
+    remote_read_first_line,
+)
 
 
 def check_outputs(config: dict) -> set[tuple[str, str]]:
@@ -20,28 +25,18 @@ def check_outputs(config: dict) -> set[tuple[str, str]]:
     print_step(f"Checking outputs on Alexandria at {outputs_path}...")
 
     # Check if outputs directory exists
-    result = subprocess.run(
-        ["ssh", host, f'test -d {outputs_path} && echo "exists" || echo "missing"'],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.stdout.strip() == "missing":
+    if not remote_dir_exists(host, outputs_path):
         print_info("Outputs directory does not exist on Alexandria yet")
         print_step(f"Creating directory: {outputs_path}")
-        subprocess.run(["ssh", host, f"mkdir -p {outputs_path}"])
+        remote_mkdir(host, outputs_path)
         return set()
 
     # List outputs
-    result = subprocess.run(
-        ["ssh", host, f"find {outputs_path} -mindepth 3 -maxdepth 3 -type d"],
-        capture_output=True,
-        text=True,
-    )
+    found_paths = remote_find(host, outputs_path, mindepth=3, maxdepth=3, type_="d")
 
     existing = set()
-    if result.returncode == 0 and result.stdout.strip():
-        for path in result.stdout.strip().split("\n"):
+    if found_paths:
+        for path in found_paths:
             # Path format: /mnt/data/nkubrakov/denovo_benchmarks/outputs/algo/version/dataset
             parts = Path(path).parts
             if len(parts) >= 3:
@@ -68,13 +63,7 @@ def check_evaluation_container(config: dict) -> bool:
     containers_base = config["alexandria"]["containers_path"]
     evaluation_path = f"{containers_base}/evaluation/evaluation.sif"
 
-    result = subprocess.run(
-        ["ssh", host, f'test -f {evaluation_path} && echo "exists" || echo "missing"'],
-        capture_output=True,
-        text=True,
-    )
-
-    return result.stdout.strip() == "exists"
+    return remote_file_exists(host, evaluation_path)
 
 
 def check_container_exists(config: dict, algo_name: str, version: str) -> bool:
@@ -91,13 +80,7 @@ def check_container_exists(config: dict, algo_name: str, version: str) -> bool:
     else:
         container_path = f"{containers_base}/{algo_name}/{version}/container.sif"
 
-    result = subprocess.run(
-        ["ssh", host, f'test -f {container_path} && echo "exists" || echo "missing"'],
-        capture_output=True,
-        text=True,
-    )
-
-    return result.stdout.strip() == "exists"
+    return remote_file_exists(host, container_path)
 
 
 def check_containers(config: dict, algorithms: list[dict[str, str]]) -> dict[str, bool]:
@@ -113,16 +96,10 @@ def check_containers(config: dict, algorithms: list[dict[str, str]]) -> dict[str
     print_step(f"Checking containers on Alexandria at {containers_base}...")
 
     # Check if containers directory exists
-    result = subprocess.run(
-        ["ssh", host, f'test -d {containers_base} && echo "exists" || echo "missing"'],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.stdout.strip() == "missing":
+    if not remote_dir_exists(host, containers_base):
         print_info("Containers directory does not exist on Alexandria yet")
         print_step(f"Creating directory: {containers_base}")
-        subprocess.run(["ssh", host, f"mkdir -p {containers_base}"])
+        remote_mkdir(host, containers_base)
         return {algo["name"]: False for algo in algorithms}
 
     container_status = {}
@@ -132,13 +109,7 @@ def check_containers(config: dict, algorithms: list[dict[str, str]]) -> dict[str
         algo_version = algo["version"]
         container_path = f"{containers_base}/{algo_name}/{algo_version}/container.sif"
 
-        result = subprocess.run(
-            ["ssh", host, f'test -f {container_path} && echo "exists" || echo "missing"'],
-            capture_output=True,
-            text=True,
-        )
-
-        exists = result.stdout.strip() == "exists"
+        exists = remote_file_exists(host, container_path)
         container_status[algo_name] = exists
 
         if exists:
@@ -161,41 +132,20 @@ def check_output_needs_augmentation(
     output_csv = f"{outputs_path}/{algo_name}/{version}/{dataset}/output.csv"
 
     # Check if output.csv exists
-    result = subprocess.run(
-        ["ssh", host, f'test -f {output_csv} && echo "exists" || echo "missing"'],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.stdout.strip() != "exists":
+    if not remote_file_exists(host, output_csv):
         return False
 
-    # Download just the header line to check columns
-    with tempfile.NamedTemporaryFile(mode="w+", suffix=".csv", delete=False) as tmp:
-        tmp_path = tmp.name
+    # Read just the header line to check columns
+    header = remote_read_first_line(host, output_csv)
+    if header is None:
+        return False
 
-    try:
-        # Get first line (header) from the CSV
-        result = subprocess.run(
-            ["ssh", host, f"head -n 1 {output_csv}"],
-            capture_output=True,
-            text=True,
-        )
+    # Check if SA and pred_RT columns exist
+    has_sa = "SA" in header.split(",")
+    has_pred_rt = "pred_RT" in header.split(",")
 
-        if result.returncode != 0:
-            return False
-
-        header = result.stdout.strip()
-
-        # Check if SA and pred_RT columns exist
-        has_sa = "SA" in header.split(",")
-        has_pred_rt = "pred_RT" in header.split(",")
-
-        # Needs augmentation if either column is missing
-        return not (has_sa and has_pred_rt)
-
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+    # Needs augmentation if either column is missing
+    return not (has_sa and has_pred_rt)
 
 
 def get_outputs_needing_augmentation(

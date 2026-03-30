@@ -1,0 +1,3 @@
+dataset,algorithm,matched_peptides,total_peptides,precision
+test_dataset_human,casanovo,950,1000,0.95
+test_dataset_human,adanovo,930,1000,0.93
