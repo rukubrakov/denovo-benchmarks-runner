@@ -175,17 +175,10 @@ def check_output_exists_on_alexandria(
     config: dict, algo_name: str, version: str, dataset: str
 ) -> bool:
     """Check if output already exists on Alexandria."""
-    import subprocess
-
     alexandria_host = config["alexandria"]["host"]
     outputs_path = config["alexandria"]["outputs_path"]
-
     output_file = f"{outputs_path}/{algo_name}/{version}/{dataset}/output.csv"
-    check_cmd = f'ssh {alexandria_host} "[ -f {output_file} ] && echo exists"'
-
-    result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
-
-    return "exists" in result.stdout
+    return remote_file_exists(alexandria_host, output_file)
 
 
 def cleanup_local_container(algo_name: str, version: str) -> None:

@@ -60,6 +60,7 @@ from runner.build_state import BuildState
 
 SCENARIOS_DIR = Path(__file__).parent.parent / "test_datasets"
 ALL_RESULTS_READY = SCENARIOS_DIR / "all_results_ready"
+FRESH_START = SCENARIOS_DIR / "fresh_start"
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +199,92 @@ def _local_rsync_pull(alex: Path):
 def _slurm_must_not_run(name: str) -> MagicMock:
     """Raises AssertionError if called — ensures no Slurm job is submitted."""
     return MagicMock(side_effect=AssertionError(f"Slurm job must not be submitted: {name}"))
+
+
+def _build_creates_container(alex: Path):
+    """
+    Side-effect for ``submit_and_wait_for_build``.
+
+    Creates the container .sif on the local Alexandria directory to simulate
+    a successful Apptainer build that pushed the image to Alexandria.
+    Returns ``(True, "job_build_<algo>")``.
+    """
+
+    def _impl(config, algo_name, version, build_state):
+        containers_base = config["alexandria"]["containers_path"]
+        if algo_name == "evaluation":
+            sif = alex / (containers_base + "/evaluation/evaluation.sif").lstrip("/")
+        else:
+            sif = alex / (containers_base + f"/{algo_name}/{version}/container.sif").lstrip("/")
+        sif.parent.mkdir(parents=True, exist_ok=True)
+        sif.touch()
+        return True, f"job_build_{algo_name}"
+
+    return _impl
+
+
+def _run_creates_output(alex: Path, algorithms: list[dict]):
+    """
+    Side-effect for ``submit_and_wait_for_run``.
+
+    Creates an augmented ``output.csv`` on the local Alexandria directory to
+    simulate a completed algorithm run that uploaded results to Alexandria.
+    Returns ``(True, "job_run_<algo>_<dataset>")``.
+    """
+
+    def _impl(config, algo_name, version, dataset):
+        outputs_base = config["alexandria"]["outputs_path"]
+        csv = alex / (outputs_base + f"/{algo_name}/{version}/{dataset}/output.csv").lstrip("/")
+        csv.parent.mkdir(parents=True, exist_ok=True)
+        csv.write_text("peptide,score,SA,pred_RT\nGELVKGA,0.99,0.85,102.3\n")
+        return True, f"job_run_{algo_name}_{dataset}"
+
+    return _impl
+
+
+def _pull_marks_available():
+    """
+    Side-effect for ``submit_and_wait_for_pull``.
+
+    Marks the dataset as available in the DatasetManager state so subsequent
+    ``run_single_combination`` calls see it as ready.  Returns ``True``.
+    """
+
+    def _impl(config, dataset_name, dataset_manager):
+        # mark_available only updates existing entries — must create the entry first
+        # (the real code calls mark_pulling when the job is submitted, then mark_available)
+        dataset_manager.mark_pulling(dataset_name, "mock_job_pull", 0)
+        dataset_manager.mark_available(dataset_name)
+        return True
+
+    return _impl
+
+
+def _evaluate_creates_results(benchmarks_dir: Path):
+    """
+    Side-effect for ``submit_and_wait_for_evaluation``.
+
+    Creates all expected result CSVs in benchmarks_dir/results/<dataset>/ to
+    simulate a completed evaluation container run.
+    Returns ``(True, "job_eval_<dataset>")``.
+    """
+    result_files = [
+        "metrics.csv",
+        "peptide_precision_plot_data.csv",
+        "AA_precision_plot_data.csv",
+        "RT_difference_plot_data.csv",
+        "SA_plot_data.csv",
+        "number_of_proteome_matches_plot_data.csv",
+    ]
+
+    def _impl(config, dataset_name):
+        results_dir = benchmarks_dir / "results" / dataset_name
+        results_dir.mkdir(parents=True, exist_ok=True)
+        for fname in result_files:
+            (results_dir / fname).write_text("header\nresult\n")
+        return True, f"job_eval_{dataset_name}"
+
+    return _impl
 
 
 async def _fetch_all_run_states(flow_run_id: str) -> tuple[list, list]:
@@ -423,6 +510,233 @@ def test_pipeline_all_complete(
     assert len(subflow_runs) == 1, (
         f"Expected 1 subflow run (evaluate_datasets_flow), got {len(subflow_runs)}.\n"
         "Update if a new sub-flow was added or removed."
+    )
+
+    # ── Filesystem state assertions ───────────────────────────────────────────
+    _assert_matches_expected(benchmarks_dir, scenario / "expected_git", "git")
+    _assert_matches_expected(asimov, scenario / "expected_asimov", "asimov")
+    _assert_matches_expected(alex, scenario / "expected_alexandria", "alexandria")
+
+
+def test_pipeline_fresh_start(
+    tmp_path: Path,
+    clean_build_state,
+) -> None:
+    """
+    Scenario: nothing exists anywhere — Alexandria is empty, no containers, no
+    outputs, no result CSVs.  dataset_state.json is empty; the dataset is NOT
+    pre-available on Asimov so the pipeline pulls it before running algorithms.
+
+    Static fixtures: tests/test_datasets/fresh_start/
+      git/                 → algorithms only (no results — none exist yet)
+      asimov/              → dataset_state.json = {} (no datasets present)
+      alexandria/          → empty
+      expected_git/        → algorithms only (evaluation doesn't run this invocation;
+                             results are created in a subsequent pipeline run after
+                             outputs exist on Alexandria)
+      expected_asimov/     → evaluation.sif pulled from Alexandria
+                             + dataset_state.json = {} (cleaned up after processing)
+      expected_alexandria/ → all containers built + all algo outputs created
+
+    Expected pipeline behaviour:
+      - check_outputs() → empty.
+      - check_containers() → all missing.
+      - check_evaluation_container() → missing.
+      - build_single_container submitted for every algo + evaluation  (3 total).
+      - After builds: re-check → all containers present; eval exists.
+      - pull_evaluation_container() → rsync from Alexandria to asimov/evaluation.sif.
+      - get_outputs_needing_augmentation() → nothing (no existing outputs).
+      - find_datasets_needing_evaluation() → nothing (no existing outputs).
+      - Main loop iter 1: scan finds no datasets → pull_datasets_flow called →
+        pull_single_dataset_task marks test_dataset_human as available.
+      - Run all algo×dataset combos; submit_and_wait_for_run creates output.csv.
+      - cleanup_dataset_task removes dataset from state → dataset_state.json = {}.
+      - Main loop iter 2: all outputs present → nothing missing → break.
+      - No evaluation happens this run (outputs existed only after the loop ran).
+    """
+    scenario = FRESH_START
+    algorithms = [
+        {"name": "casanovo", "version": "v4.2.1"},
+        {"name": "adanovo", "version": "bm-1.0.0"},
+    ]
+
+    asimov = _setup_mutable_asimov(scenario, tmp_path)
+    alex = _setup_mutable_alexandria(scenario, tmp_path)
+    benchmarks_dir = asimov / "denovo_benchmarks"
+
+    config = {
+        "denovo_benchmarks": {
+            "local_path": str(benchmarks_dir),
+            "repo_url": "git@github.com:test/denovo_benchmarks.git",
+            "branch": "main",
+        },
+        "alexandria": {
+            "host": "mock@alexandria",
+            "outputs_path": "/mock/outputs",
+            "containers_path": "/mock/containers",
+        },
+        "datasets": ["test_dataset_human"],
+        "slurm": {
+            "partition": "one_hour",
+            "cpus": 4,
+            "memory": "16G",
+            "gpus": 1,
+            "time": "01:00:00",
+        },
+        "excluded_algorithms": [],
+        "version_strategy": "latest_only",
+    }
+
+    with ExitStack() as stack:
+        # ── Local-filesystem SSH / rsync primitives ──────────────────────────
+        stack.enter_context(
+            patch(
+                "runner.alexandria.remote_file_exists",
+                side_effect=_local_remote_file_exists(alex),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "runner.alexandria.remote_dir_exists",
+                side_effect=_local_remote_dir_exists(alex),
+            )
+        )
+        stack.enter_context(
+            patch("runner.alexandria.remote_mkdir", side_effect=_local_remote_mkdir(alex))
+        )
+        stack.enter_context(
+            patch("runner.alexandria.remote_find", side_effect=_local_remote_find(alex))
+        )
+        stack.enter_context(
+            patch(
+                "runner.alexandria.remote_read_first_line",
+                side_effect=_local_remote_read_first_line(alex),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "runner.algorithm_runner.remote_file_exists",
+                side_effect=_local_remote_file_exists(alex),
+            )
+        )
+        stack.enter_context(
+            patch("runner.algorithm_runner.rsync_pull", side_effect=_local_rsync_pull(alex))
+        )
+        # ── Git network primitives (no real remote needed) ───────────────────
+        stack.enter_context(patch("runner.git_ops.git_fetch"))
+        stack.enter_context(patch("runner.git_ops.git_count_behind", return_value=0))
+        # ── Point get_runner_dir() → asimov (for eval container path + DatasetManager) ─
+        stack.enter_context(patch("runner.algorithm_runner.get_runner_dir", return_value=asimov))
+        stack.enter_context(patch("runner.dataset_manager.get_runner_dir", return_value=asimov))
+        # ── Scaffolding ───────────────────────────────────────────────────────
+        stack.enter_context(patch("orchestrate.load_config", return_value=config))
+        stack.enter_context(patch("orchestrate.cleanup_workspace", new=MagicMock()))
+        # ── Slurm: build creates containers on Alexandria ─────────────────────
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_build",
+                side_effect=_build_creates_container(alex),
+            )
+        )
+        # ── Slurm: run creates augmented output.csv on Alexandria ─────────────
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_run",
+                side_effect=_run_creates_output(alex, algorithms),
+            )
+        )
+        # ── Slurm: evaluate creates result CSVs in benchmarks_dir/results/ ───
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_evaluation",
+                side_effect=_evaluate_creates_results(benchmarks_dir),
+            )
+        )
+        # ── Slurm: pull marks dataset as available in DatasetManager ────────
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_pull",
+                side_effect=_pull_marks_available(),
+            )
+        )
+
+        with prefect_test_harness():
+            from orchestrate import main
+
+            state = main(return_state=True)
+
+            # Collect task / subflow states while the Prefect backend is still live
+            flow_run_id = str(state.state_details.flow_run_id)
+            task_runs, subflow_runs = asyncio.run(_fetch_all_run_states(flow_run_id))
+
+    # ── Prefect state assertions ──────────────────────────────────────────────
+    assert state.is_completed(), f"Top-level flow did not complete. State: {state.type}"
+
+    assert task_runs, "No task runs recorded — Prefect state query returned nothing"
+    failed_tasks = [tr for tr in task_runs if not tr.state.is_completed()]
+    assert not failed_tasks, "Tasks did not complete:\n" + "\n".join(
+        f"  {tr.name!r}: {tr.state.type}" for tr in failed_tasks
+    )
+
+    failed_subflows = [fr for fr in subflow_runs if not fr.state.is_completed()]
+    assert not failed_subflows, "Subflows did not complete:\n" + "\n".join(
+        f"  {fr.name!r}: {fr.state.type}" for fr in failed_subflows
+    )
+
+    # ── Exact task / subflow counts ───────────────────────────────────────────
+    task_name_counts = Counter(tr.name.rsplit("-", 1)[0] for tr in task_runs)
+
+    expected_task_name_counts = Counter(
+        {
+            # Pre-loop once; loop iter 1 (missing outputs); loop iter 2 (all done) = 3
+            "Check Alexandria Outputs": 3,
+            # Loop iter 1 (missing → runs algo) + iter 2 (nothing missing → break) = 2
+            "Analyze Missing Combinations": 2,
+            # Initial check + re-check after builds complete = 2
+            "Check Evaluation Container on Alexandria": 2,
+            # Proxy task for run_algorithm_benchmarks_flow subflow = 1
+            "Run Algorithm Benchmarks": 1,
+            # Proxy task for evaluate_datasets_flow subflow (empty list → no-op) = 1
+            "Evaluate Datasets": 1,
+            # Loop iter 1 only (iter 2 breaks before scan) = 1
+            "Scan Existing Datasets on Asimov": 1,
+            # Proxy task for pull_datasets_flow subflow = 1
+            # (pull_single_dataset_task runs inside the subflow, not tracked here)
+            "Pull Datasets": 1,
+            # Pre-loop (post-build) — no existing outputs → not needed  = 1
+            "Find Datasets Needing Evaluation": 1,
+            # Pre-loop (post-build) — no existing outputs → nothing to augment = 1
+            "Check Outputs Needing Augmentation": 1,
+            # Post-build once = 1
+            "Pull Evaluation Container": 1,
+            # build_single_container for each algo + evaluation = 3
+            "Build Container: evaluation": 1,
+            "Build Container: casanovo": 1,
+            "Build Container: adanovo": 1,
+            # Pre-loop once each = 1
+            "Analyze Container Build Status": 1,
+            "Check Containers existance on Alexandria": 1,
+            "Discover available algorithms": 1,
+            "Ensure denovo-benchmarks Repository": 1,
+        }
+    )
+
+    assert task_name_counts == expected_task_name_counts, (
+        "Pipeline task structure has changed!\n"
+        "  Actual:   " + str(dict(task_name_counts.most_common())) + "\n"
+        "  Expected: " + str(dict(expected_task_name_counts.most_common())) + "\n"
+        "Update the expected_task_name_counts dict if the change is intentional."
+    )
+
+    # 3 subflows: evaluate_datasets_flow (pre-loop, empty) +
+    #             pull_datasets_flow (iter 1, pulls test_dataset_human) +
+    #             run_algorithm_benchmarks_flow (iter 1, runs all combos)
+    # Note: pull_single_dataset_task, run_single_combination and evaluate_dataset_task
+    # run inside subflows — they appear under those subflows' flow_run_ids, not the
+    # main flow's, so they are not counted here.
+    assert len(subflow_runs) == 3, (
+        f"Expected 3 subflow runs, got {len(subflow_runs)}.\n"
+        + "\n".join(f"  {fr.name!r}" for fr in subflow_runs)
     )
 
     # ── Filesystem state assertions ───────────────────────────────────────────
