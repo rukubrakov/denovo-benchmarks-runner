@@ -1,0 +1,2 @@
+# container.sif — placeholder for the casanovo v4.2.1 Apptainer container.
+# Just needs to exist on Alexandria for check_containers() to report it present.

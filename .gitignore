@@ -34,3 +34,11 @@ overlays/
 containers/
 outputs/
 .venv-dev
+
+# Allow test fixture files that would otherwise be ignored
+!tests/test_datasets/**/*.sif
+!tests/test_datasets/**/dataset_state.json
+!tests/test_datasets/**/containers/
+!tests/test_datasets/**/containers/**
+!tests/test_datasets/**/outputs/
+!tests/test_datasets/**/outputs/**
