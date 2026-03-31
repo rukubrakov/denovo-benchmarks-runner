@@ -330,6 +330,72 @@ def clean_build_state(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers — extracted from the two happy-path tests above
+# ---------------------------------------------------------------------------
+
+
+def _make_config(benchmarks_dir: Path) -> dict:
+    """Standard pipeline config pointing at a mutable *benchmarks_dir*."""
+    return {
+        "denovo_benchmarks": {
+            "local_path": str(benchmarks_dir),
+            "repo_url": "git@github.com:test/denovo_benchmarks.git",
+            "branch": "main",
+        },
+        "alexandria": {
+            "host": "mock@alexandria",
+            "outputs_path": "/mock/outputs",
+            "containers_path": "/mock/containers",
+        },
+        "datasets": ["test_dataset_human"],
+        "slurm": {
+            "partition": "one_hour",
+            "cpus": 4,
+            "memory": "16G",
+            "gpus": 1,
+            "time": "01:00:00",
+        },
+        "excluded_algorithms": [],
+        "version_strategy": "latest_only",
+    }
+
+
+def _enter_infra_patches(
+    stack: ExitStack,
+    asimov: Path,
+    alex: Path,
+    config: dict,
+    *,
+    git_count_behind: int = 0,
+) -> None:
+    """
+    Enter all non-Slurm infrastructure patches into *stack*:
+      - remote_fs primitives (SSH / rsync) → local-filesystem equivalents
+      - git network primitives → no-ops (git_count_behind configurable)
+      - get_runner_dir → *asimov*
+      - load_config → *config*
+      - cleanup_workspace → MagicMock
+    """
+    for target, side_effect in [
+        ("runner.alexandria.remote_file_exists", _local_remote_file_exists(alex)),
+        ("runner.alexandria.remote_dir_exists", _local_remote_dir_exists(alex)),
+        ("runner.alexandria.remote_mkdir", _local_remote_mkdir(alex)),
+        ("runner.alexandria.remote_find", _local_remote_find(alex)),
+        ("runner.alexandria.remote_read_first_line", _local_remote_read_first_line(alex)),
+        ("runner.algorithm_runner.remote_file_exists", _local_remote_file_exists(alex)),
+        ("runner.algorithm_runner.rsync_pull", _local_rsync_pull(alex)),
+    ]:
+        stack.enter_context(patch(target, side_effect=side_effect))
+
+    stack.enter_context(patch("runner.git_ops.git_fetch"))
+    stack.enter_context(patch("runner.git_ops.git_count_behind", return_value=git_count_behind))
+    stack.enter_context(patch("runner.algorithm_runner.get_runner_dir", return_value=asimov))
+    stack.enter_context(patch("runner.dataset_manager.get_runner_dir", return_value=asimov))
+    stack.enter_context(patch("orchestrate.load_config", return_value=config))
+    stack.enter_context(patch("orchestrate.cleanup_workspace", new=MagicMock()))
+
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -516,6 +582,540 @@ def test_pipeline_all_complete(
     _assert_matches_expected(benchmarks_dir, scenario / "expected_git", "git")
     _assert_matches_expected(asimov, scenario / "expected_asimov", "asimov")
     _assert_matches_expected(alex, scenario / "expected_alexandria", "alexandria")
+
+
+# ---------------------------------------------------------------------------
+# Error-scenario tests
+# ---------------------------------------------------------------------------
+# These tests verify graceful-degradation behaviour: the top-level flow must
+# always complete (never crash), pipeline logic must stop correctly at the
+# right point, and the filesystem must show only the side-effects that are
+# expected given the error.
+#
+# Mocking strategy: same infra patches as the happy-path tests via
+# _enter_infra_patches(); Slurm mocks are replaced with failure-producing
+# equivalents.
+#
+# Exact Prefect task counts are asserted with the same rigour as the
+# happy-path tests.  Tasks that raise an Exception (e.g. Build Container)
+# appear in task_runs with a non-Completed state; the counts still include
+# them so the Counter assertion remains a full structural check.
+# ---------------------------------------------------------------------------
+
+
+def test_pipeline_build_fails(
+    tmp_path: Path,
+    clean_build_state,
+) -> None:
+    """
+    Scenario: all three Apptainer builds fail (casanovo, adanovo, evaluation).
+
+    Expected pipeline behaviour:
+      - All Build Container tasks raise an Exception → CRASHED state in Prefect.
+      - Post-build re-check shows containers still absent.
+      - evaluation_exists = False → augmentation / evaluate_datasets_flow skipped.
+      - Main-loop iter 1: missing_with_container = [] (no containers) → break.
+      - No Slurm run / pull / evaluation jobs submitted.
+      - Alexandria: no .sif or output files created.
+      - Asimov: evaluation.sif absent, dataset_state.json unchanged ({}).
+    """
+    scenario = FRESH_START
+    asimov = _setup_mutable_asimov(scenario, tmp_path)
+    alex = _setup_mutable_alexandria(scenario, tmp_path)
+    benchmarks_dir = asimov / "denovo_benchmarks"
+    config = _make_config(benchmarks_dir)
+
+    with ExitStack() as stack:
+        _enter_infra_patches(stack, asimov, alex, config)
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_build",
+                return_value=(False, "mock_job_build"),
+            )
+        )
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_run", _slurm_must_not_run("run"))
+        )
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_pull", _slurm_must_not_run("pull"))
+        )
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_evaluation", _slurm_must_not_run("evaluate"))
+        )
+
+        with prefect_test_harness():
+            from orchestrate import main
+
+            state = main(return_state=True)
+            flow_run_id = str(state.state_details.flow_run_id)
+            task_runs, subflow_runs = asyncio.run(_fetch_all_run_states(flow_run_id))
+
+    # ── Prefect state assertions ──────────────────────────────────────────────
+    assert state.is_completed(), f"Top-level flow did not complete. State: {state.type}"
+
+    task_name_counts = Counter(tr.name.rsplit("-", 1)[0] for tr in task_runs)
+    expected_task_name_counts = Counter(
+        {
+            # Pre-loop parallel + loop iter 1 = 2
+            "Check Alexandria Outputs": 2,
+            # Pre-build only; post-build re-check calls raw check_containers() not the task = 1
+            # Post-build re-check does call check_evaluation_container_task (task wrapper) = 2
+            "Check Containers existance on Alexandria": 1,
+            "Check Evaluation Container on Alexandria": 2,
+            # Once each
+            "Analyze Container Build Status": 1,
+            "Discover available algorithms": 1,
+            "Ensure denovo-benchmarks Repository": 1,
+            # All three fail (CRASHED state but still counted)
+            "Build Container: casanovo": 1,
+            "Build Container: adanovo": 1,
+            "Build Container: evaluation": 1,
+            # Loop iter 1 only — missing_with_container=[] → break immediately
+            "Analyze Missing Combinations": 1,
+            # NOTE: Pull Evaluation Container, Check Outputs Needing Augmentation,
+            # Find Datasets Needing Evaluation, Evaluate Datasets, Scan Existing Datasets,
+            # Pull Datasets, Run Algorithm Benchmarks — all skipped.
+        }
+    )
+    assert task_name_counts == expected_task_name_counts, (
+        "Pipeline task structure has changed!\n"
+        "  Actual:   " + str(dict(task_name_counts.most_common())) + "\n"
+        "  Expected: " + str(dict(expected_task_name_counts.most_common()))
+    )
+    assert len(subflow_runs) == 0, (
+        f"Expected 0 subflow runs (all skipped after build failure), got {len(subflow_runs)}."
+    )
+
+    # ── Filesystem assertions ─────────────────────────────────────────────────
+    # No containers or outputs created on Alexandria.
+    assert not list((alex / "mock" / "containers").rglob("*.sif")), (
+        "No .sif files should exist on Alexandria after build failure"
+    )
+    assert not list((alex / "mock" / "outputs").rglob("*.csv")), (
+        "No output.csv files should exist on Alexandria after build failure"
+    )
+    assert not (asimov / "evaluation.sif").exists(), (
+        "evaluation.sif must not be pulled when evaluation container was not built"
+    )
+
+
+def test_pipeline_dataset_pull_fails(
+    tmp_path: Path,
+    clean_build_state,
+) -> None:
+    """
+    Scenario: builds succeed, but the dataset pull job returns failure.
+
+    Expected pipeline behaviour:
+      - Containers created on Alexandria; evaluation.sif pulled to Asimov.
+      - Main-loop iter 1: scan finds no datasets; pull_datasets_flow called;
+        pull_single_dataset_task returns False → pulled_count = 0 → break.
+      - No run / evaluation Slurm jobs submitted.
+      - Alexandria: containers present, no outputs.
+      - Asimov: evaluation.sif present, dataset_state.json stays {}.
+    """
+    scenario = FRESH_START
+    asimov = _setup_mutable_asimov(scenario, tmp_path)
+    alex = _setup_mutable_alexandria(scenario, tmp_path)
+    benchmarks_dir = asimov / "denovo_benchmarks"
+    config = _make_config(benchmarks_dir)
+
+    with ExitStack() as stack:
+        _enter_infra_patches(stack, asimov, alex, config)
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_build",
+                side_effect=_build_creates_container(alex),
+            )
+        )
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_run", _slurm_must_not_run("run"))
+        )
+        # Pull job fails: returns False without marking dataset available.
+        stack.enter_context(patch("orchestrate.submit_and_wait_for_pull", return_value=False))
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_evaluation", _slurm_must_not_run("evaluate"))
+        )
+
+        with prefect_test_harness():
+            from orchestrate import main
+
+            state = main(return_state=True)
+            flow_run_id = str(state.state_details.flow_run_id)
+            task_runs, subflow_runs = asyncio.run(_fetch_all_run_states(flow_run_id))
+
+    # ── Prefect state assertions ──────────────────────────────────────────────
+    assert state.is_completed(), f"Top-level flow did not complete. State: {state.type}"
+
+    task_name_counts = Counter(tr.name.rsplit("-", 1)[0] for tr in task_runs)
+    expected_task_name_counts = Counter(
+        {
+            # Pre-loop + loop iter 1 = 2
+            "Check Alexandria Outputs": 2,
+            # Pre-build only; post-build re-check calls raw check_containers() not the task = 1
+            # Post-build re-check does call check_evaluation_container_task (task wrapper) = 2
+            "Check Containers existance on Alexandria": 1,
+            "Check Evaluation Container on Alexandria": 2,
+            "Analyze Container Build Status": 1,
+            "Discover available algorithms": 1,
+            "Ensure denovo-benchmarks Repository": 1,
+            "Build Container: casanovo": 1,
+            "Build Container: adanovo": 1,
+            "Build Container: evaluation": 1,
+            # Post-build, pre-loop
+            "Pull Evaluation Container": 1,
+            "Check Outputs Needing Augmentation": 1,
+            "Find Datasets Needing Evaluation": 1,
+            "Evaluate Datasets": 1,  # subflow proxy, empty list
+            # Loop iter 1: scan → pull → pulled_count=0 → break
+            "Scan Existing Datasets on Asimov": 1,
+            "Pull Datasets": 1,  # subflow proxy
+            "Analyze Missing Combinations": 1,
+        }
+    )
+    assert task_name_counts == expected_task_name_counts, (
+        "Pipeline task structure has changed!\n"
+        "  Actual:   " + str(dict(task_name_counts.most_common())) + "\n"
+        "  Expected: " + str(dict(expected_task_name_counts.most_common()))
+    )
+    # 2 subflows: evaluate_datasets_flow (empty, pre-loop) + pull_datasets_flow (failed)
+    assert len(subflow_runs) == 2, (
+        f"Expected 2 subflow runs, got {len(subflow_runs)}.\n"
+        + "\n".join(f"  {fr.name!r}" for fr in subflow_runs)
+    )
+
+    # ── Filesystem assertions ─────────────────────────────────────────────────
+    # Containers built on Alexandria.
+    assert (alex / "mock" / "containers" / "casanovo" / "v4.2.1" / "container.sif").exists()
+    assert (alex / "mock" / "containers" / "adanovo" / "bm-1.0.0" / "container.sif").exists()
+    assert (alex / "mock" / "containers" / "evaluation" / "evaluation.sif").exists()
+    # Eval container pulled to Asimov.
+    assert (asimov / "evaluation.sif").exists()
+    # No outputs (pull failed, nothing ran).
+    assert not list((alex / "mock" / "outputs").rglob("*.csv")), (
+        "No output files should exist — run never started"
+    )
+
+
+def test_pipeline_algorithm_run_fails(
+    tmp_path: Path,
+    clean_build_state,
+) -> None:
+    """
+    Scenario: builds succeed, dataset pull succeeds, but run jobs fail.
+
+    Expected pipeline behaviour:
+      - Containers created; dataset pulled (marked available).
+      - run_single_combination raises Exception for every combination.
+      - run_algorithm_benchmarks_flow returns (2, 0) → failed_runs=2 → break.
+      - No outputs created on Alexandria.
+      - dataset_state.json left with test_dataset_human marked available
+        (cleanup_dataset_task is only called when ALL algos succeed).
+    """
+    scenario = FRESH_START
+    asimov = _setup_mutable_asimov(scenario, tmp_path)
+    alex = _setup_mutable_alexandria(scenario, tmp_path)
+    benchmarks_dir = asimov / "denovo_benchmarks"
+    config = _make_config(benchmarks_dir)
+
+    with ExitStack() as stack:
+        _enter_infra_patches(stack, asimov, alex, config)
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_build",
+                side_effect=_build_creates_container(alex),
+            )
+        )
+        # Run job fails: returns (False, job_id) → run_single_combination raises.
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_run",
+                return_value=(False, "mock_job_run"),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_pull",
+                side_effect=_pull_marks_available(),
+            )
+        )
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_evaluation", _slurm_must_not_run("evaluate"))
+        )
+
+        with prefect_test_harness():
+            from orchestrate import main
+
+            state = main(return_state=True)
+            flow_run_id = str(state.state_details.flow_run_id)
+            task_runs, subflow_runs = asyncio.run(_fetch_all_run_states(flow_run_id))
+
+    # ── Prefect state assertions ──────────────────────────────────────────────
+    assert state.is_completed(), f"Top-level flow did not complete. State: {state.type}"
+
+    task_name_counts = Counter(tr.name.rsplit("-", 1)[0] for tr in task_runs)
+    expected_task_name_counts = Counter(
+        {
+            # Pre-loop + loop iter 1 = 2
+            "Check Alexandria Outputs": 2,
+            # Pre-build only; post-build re-check calls raw check_containers() not the task = 1
+            # Post-build re-check does call check_evaluation_container_task (task wrapper) = 2
+            "Check Containers existance on Alexandria": 1,
+            "Check Evaluation Container on Alexandria": 2,
+            "Analyze Container Build Status": 1,
+            "Discover available algorithms": 1,
+            "Ensure denovo-benchmarks Repository": 1,
+            "Build Container: casanovo": 1,
+            "Build Container: adanovo": 1,
+            "Build Container: evaluation": 1,
+            "Pull Evaluation Container": 1,
+            "Check Outputs Needing Augmentation": 1,
+            "Find Datasets Needing Evaluation": 1,
+            "Evaluate Datasets": 1,
+            # Loop iter 1: scan → pull (ok) → run (fails) → failed_runs>0 → break
+            "Scan Existing Datasets on Asimov": 1,
+            "Pull Datasets": 1,
+            "Run Algorithm Benchmarks": 1,
+            "Analyze Missing Combinations": 1,
+            # run_single_combination tasks live inside run_algorithm_benchmarks subflow.
+        }
+    )
+    assert task_name_counts == expected_task_name_counts, (
+        "Pipeline task structure has changed!\n"
+        "  Actual:   " + str(dict(task_name_counts.most_common())) + "\n"
+        "  Expected: " + str(dict(expected_task_name_counts.most_common()))
+    )
+    # 3 subflows: evaluate_datasets_flow + pull_datasets_flow + run_algorithm_benchmarks_flow
+    assert len(subflow_runs) == 3, (
+        f"Expected 3 subflow runs, got {len(subflow_runs)}.\n"
+        + "\n".join(f"  {fr.name!r}" for fr in subflow_runs)
+    )
+
+    # ── Filesystem assertions ─────────────────────────────────────────────────
+    # Containers present on Alexandria.
+    assert (alex / "mock" / "containers" / "casanovo" / "v4.2.1" / "container.sif").exists()
+    assert (alex / "mock" / "containers" / "adanovo" / "bm-1.0.0" / "container.sif").exists()
+    assert (asimov / "evaluation.sif").exists()
+    # No outputs (runs failed).
+    assert not list((alex / "mock" / "outputs").rglob("*.csv")), (
+        "No output files should exist — all runs failed"
+    )
+    # Dataset left marked available (cleanup only happens after successful runs).
+    import json
+
+    state_data = json.loads((asimov / "dataset_state.json").read_text())
+    assert state_data.get("test_dataset_human", {}).get("status") == "available", (
+        "Dataset should remain marked available when runs fail (no cleanup)"
+    )
+
+
+def test_pipeline_evaluation_fails(
+    tmp_path: Path,
+    clean_build_state,
+) -> None:
+    """
+    Scenario: builds, pull, and algorithm runs succeed, but the evaluation job fails.
+
+    Expected pipeline behaviour:
+      - evaluate_dataset_task raises Exception inside run_algorithm_benchmarks_flow;
+        the subflow catches it and continues (graceful degradation).
+      - cleanup_dataset_task still runs (it runs whenever all ALGO runs succeed,
+        regardless of evaluation result).
+      - run_algorithm_benchmarks_flow returns (2, 2) → failed_runs=0 → continue.
+      - Loop iter 2: all outputs present → break.
+      - Result CSVs are NOT created (evaluation failed).
+      - dataset_state.json = {} (cleanup removed the dataset entry).
+    """
+    scenario = FRESH_START
+    algorithms = [
+        {"name": "casanovo", "version": "v4.2.1"},
+        {"name": "adanovo", "version": "bm-1.0.0"},
+    ]
+    asimov = _setup_mutable_asimov(scenario, tmp_path)
+    alex = _setup_mutable_alexandria(scenario, tmp_path)
+    benchmarks_dir = asimov / "denovo_benchmarks"
+    config = _make_config(benchmarks_dir)
+
+    with ExitStack() as stack:
+        _enter_infra_patches(stack, asimov, alex, config)
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_build",
+                side_effect=_build_creates_container(alex),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_run",
+                side_effect=_run_creates_output(alex, algorithms),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_pull",
+                side_effect=_pull_marks_available(),
+            )
+        )
+        # Evaluation job fails.
+        stack.enter_context(
+            patch(
+                "orchestrate.submit_and_wait_for_evaluation",
+                return_value=(False, "mock_job_eval"),
+            )
+        )
+
+        with prefect_test_harness():
+            from orchestrate import main
+
+            state = main(return_state=True)
+            flow_run_id = str(state.state_details.flow_run_id)
+            task_runs, subflow_runs = asyncio.run(_fetch_all_run_states(flow_run_id))
+
+    # ── Prefect state assertions ──────────────────────────────────────────────
+    assert state.is_completed(), f"Top-level flow did not complete. State: {state.type}"
+
+    task_name_counts = Counter(tr.name.rsplit("-", 1)[0] for tr in task_runs)
+    expected_task_name_counts = Counter(
+        {
+            # Pre-loop + iter 1 + iter 2 = 3
+            "Check Alexandria Outputs": 3,
+            # iter 1 (missing) + iter 2 (all present → break) = 2
+            "Analyze Missing Combinations": 2,
+            # Pre-build only; post-build re-check calls raw check_containers() not the task = 1
+            # Post-build re-check does call check_evaluation_container_task (task wrapper) = 2
+            "Check Containers existance on Alexandria": 1,
+            "Check Evaluation Container on Alexandria": 2,
+            "Analyze Container Build Status": 1,
+            "Discover available algorithms": 1,
+            "Ensure denovo-benchmarks Repository": 1,
+            "Build Container: casanovo": 1,
+            "Build Container: adanovo": 1,
+            "Build Container: evaluation": 1,
+            "Pull Evaluation Container": 1,
+            "Check Outputs Needing Augmentation": 1,
+            "Find Datasets Needing Evaluation": 1,
+            "Evaluate Datasets": 1,
+            # Loop iter 1
+            "Scan Existing Datasets on Asimov": 1,
+            "Pull Datasets": 1,
+            "Run Algorithm Benchmarks": 1,
+            # iter 2 breaks at Analyze Missing Combinations before scan/pull/run
+        }
+    )
+    assert task_name_counts == expected_task_name_counts, (
+        "Pipeline task structure has changed!\n"
+        "  Actual:   " + str(dict(task_name_counts.most_common())) + "\n"
+        "  Expected: " + str(dict(expected_task_name_counts.most_common()))
+    )
+    assert len(subflow_runs) == 3, (
+        f"Expected 3 subflow runs, got {len(subflow_runs)}.\n"
+        + "\n".join(f"  {fr.name!r}" for fr in subflow_runs)
+    )
+
+    # ── Filesystem assertions ─────────────────────────────────────────────────
+    # Outputs exist on Alexandria (runs succeeded).
+    assert (
+        alex / "mock" / "outputs" / "casanovo" / "v4.2.1" / "test_dataset_human" / "output.csv"
+    ).exists()
+    assert (
+        alex / "mock" / "outputs" / "adanovo" / "bm-1.0.0" / "test_dataset_human" / "output.csv"
+    ).exists()
+    # No result CSVs (evaluation failed).
+    assert not (benchmarks_dir / "results" / "test_dataset_human").exists(), (
+        "results/ directory must not exist — evaluation never completed"
+    )
+    # Dataset cleaned up despite eval failure (cleanup runs whenever algo runs succeed).
+
+    assert (asimov / "dataset_state.json").read_bytes() == b"{}", (
+        "cleanup_dataset_task runs even when evaluation fails"
+    )
+
+
+def test_pipeline_git_pull_fails(
+    tmp_path: Path,
+    clean_build_state,
+) -> None:
+    """
+    Scenario: git reports the repo is 3 commits behind but the pull fails
+    (no real remote on the tmp git repo).
+
+    Expected pipeline behaviour:
+      - check_or_clone_repo() calls git_pull_rebase(); it fails (no configured
+        remote) and returns False.  The task logs a warning and returns False
+        — no crash, no raised exception.
+      - Pipeline continues normally: all outputs already present on Alexandria
+        (all_results_ready scenario), so the loop breaks on the first iteration.
+      - Task counts are identical to test_pipeline_all_complete.
+    """
+    scenario = ALL_RESULTS_READY
+    asimov = _setup_mutable_asimov(scenario, tmp_path)
+    alex = _setup_mutable_alexandria(scenario, tmp_path)
+    benchmarks_dir = asimov / "denovo_benchmarks"
+    config = _make_config(benchmarks_dir)
+
+    with ExitStack() as stack:
+        # git_count_behind=3 triggers the pull path; git_pull_rebase runs for real
+        # on the tmp repo (no remote → fails gracefully, returns False).
+        _enter_infra_patches(stack, asimov, alex, config, git_count_behind=3)
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_build", _slurm_must_not_run("build"))
+        )
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_run", _slurm_must_not_run("run"))
+        )
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_pull", _slurm_must_not_run("pull"))
+        )
+        stack.enter_context(
+            patch("orchestrate.submit_and_wait_for_evaluation", _slurm_must_not_run("evaluate"))
+        )
+
+        with prefect_test_harness():
+            from orchestrate import main
+
+            state = main(return_state=True)
+            flow_run_id = str(state.state_details.flow_run_id)
+            task_runs, subflow_runs = asyncio.run(_fetch_all_run_states(flow_run_id))
+
+    # ── Prefect state assertions ──────────────────────────────────────────────
+    assert state.is_completed(), f"Top-level flow did not complete. State: {state.type}"
+
+    # All tasks completed (git pull failure is logged, not raised as exception).
+    failed_tasks = [tr for tr in task_runs if not tr.state.is_completed()]
+    assert not failed_tasks, "All tasks must complete despite git pull failure:\n" + "\n".join(
+        f"  {tr.name!r}: {tr.state.type}" for tr in failed_tasks
+    )
+
+    task_name_counts = Counter(tr.name.rsplit("-", 1)[0] for tr in task_runs)
+    # Identical to test_pipeline_all_complete — pipeline proceeds normally
+    # after the failed pull.
+    expected_task_name_counts = Counter(
+        {
+            "Check Alexandria Outputs": 2,
+            "Analyze Container Build Status": 1,
+            "Analyze Missing Combinations": 1,
+            "Check Containers existance on Alexandria": 1,
+            "Check Evaluation Container on Alexandria": 1,
+            "Check Outputs Needing Augmentation": 1,
+            "Discover available algorithms": 1,
+            "Ensure denovo-benchmarks Repository": 1,
+            "Evaluate Datasets": 1,
+            "Find Datasets Needing Evaluation": 1,
+            "Pull Evaluation Container": 1,
+        }
+    )
+    assert task_name_counts == expected_task_name_counts, (
+        "Pipeline task structure has changed!\n"
+        "  Actual:   " + str(dict(task_name_counts.most_common())) + "\n"
+        "  Expected: " + str(dict(expected_task_name_counts.most_common()))
+    )
+    assert len(subflow_runs) == 1, (
+        f"Expected 1 subflow run (evaluate_datasets_flow), got {len(subflow_runs)}."
+    )
+
+    # ── Filesystem assertions ─────────────────────────────────────────────────
+    # evaluation.sif pulled from Alexandria despite failed git pull.
+    assert (asimov / "evaluation.sif").exists()
 
 
 def test_pipeline_fresh_start(
